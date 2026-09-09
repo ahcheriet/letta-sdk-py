@@ -12,6 +12,7 @@ class QueryStream:
     client: Any
     prompt: Any
     options: QueryOptions
+    on_close: Any | None = None
     _agent_id: str | None = None
     _session: LettaSession | None = None
     _started: bool = False
@@ -24,10 +25,14 @@ class QueryStream:
         if self._closed:
             return
         self._closed = True
-        if self._session is not None:
-            await self._session.close()
-        if self._agent_id is not None:
-            await self.client.agents.delete(self._agent_id)
+        try:
+            if self._session is not None:
+                await self._session.close()
+            if self._agent_id is not None:
+                await self.client.agents.delete(self._agent_id)
+        finally:
+            if self.on_close is not None:
+                await self.on_close()
 
     async def _run(self) -> AsyncIterator[SDKMessage]:
         if self._started:

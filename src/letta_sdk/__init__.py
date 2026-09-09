@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .client import LettaAgentClient
-from .images import image_from_base64, image_from_file, image_from_url
+from .images import image_from_base64, image_from_file
 from .query import QueryStream
 from .session import LettaSession
 from .transcript import TranscriptAccumulator
@@ -48,7 +48,6 @@ __all__ = [
     "create_session",
     "image_from_base64",
     "image_from_file",
-    "image_from_url",
     "query",
     "resume_session",
     "text_content",
@@ -107,13 +106,5 @@ def query(
     managed_client = client or LettaAgentClient(**client_kwargs)
     stream = managed_client.query(prompt, options)
     if client is None:
-        original_close = stream.close
-
-        async def close_with_client() -> None:
-            try:
-                await original_close()
-            finally:
-                await managed_client.close()
-
-        stream.close = close_with_client  # type: ignore[method-assign]
+        stream.on_close = managed_client.close
     return stream

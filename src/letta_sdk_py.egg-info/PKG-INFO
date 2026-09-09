@@ -1,3 +1,11 @@
+Metadata-Version: 2.4
+Name: letta-sdk-py
+Version: 0.1.0
+Summary: A pythonic SDK for working with Letta agents
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: letta-client==1.12.1
+
 # letta-sdk-py
 
 A pythonic SDK for Letta agents, inspired by the TypeScript `letta-agent-sdk`.
@@ -12,7 +20,7 @@ This repository now contains an MVP package built on top of `letta-client`.
 - top-level helpers: `create_agent`, `create_session`, `resume_session`, `query`
 - async session API with `async with`, `send()`, and `stream()`
 - management accessors for agents, conversations, and models
-- image helpers for file and base64 content plus a simple transcript accumulator
+- image helpers and a simple transcript accumulator
 
 ## Install
 
