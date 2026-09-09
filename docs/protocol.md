@@ -2,7 +2,7 @@
 
 The Letta **app server** (agent SDK v2) speaks JSON-over-WebSocket. This page
 documents exactly what the SDK sends and receives, verified against a live
-local server (`ws://127.0.0.1:4500/ws`, `--ws-auth capability-token`).
+local server (the SDK's default endpoint, `--ws-auth capability-token`).
 
 ---
 

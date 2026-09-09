@@ -5,12 +5,11 @@ Run directly (not collected by pytest)::
     .venv/bin/python tests/live_smoke.py
 
 Requires:
-  * an app server listening on ``ws://127.0.0.1:4500/ws`` (override with
-    ``LETTA_APP_SERVER_URL``),
-  * a capability token file (default ``/home/ahcheriet/kayn-app-server-token``,
-    override with ``LETTA_TOKEN_FILE``),
-  * a model handle (override with ``LETTA_MODEL``,
-    default ``openai-compatible/Qwen3.8-27B``).
+  * an app server (default: the SDK's built-in localhost endpoint; override
+    with ``LETTA_APP_SERVER_URL``),
+  * a capability token file (``LETTA_TOKEN_FILE`` — required for
+    ``--ws-auth capability-token`` servers),
+  * a model handle (``LETTA_MODEL`` — required).
 """
 
 from __future__ import annotations
@@ -30,9 +29,12 @@ from letta_sdk import (
     UsageMessage,
 )
 
-URL = os.environ.get("LETTA_APP_SERVER_URL", "ws://127.0.0.1:4500/ws")
-TOKEN_FILE = os.environ.get("LETTA_TOKEN_FILE", "/home/ahcheriet/kayn-app-server-token")
-MODEL = os.environ.get("LETTA_MODEL", "openai-compatible/Qwen3.8-27B")
+URL = os.environ.get("LETTA_APP_SERVER_URL")
+TOKEN_FILE = os.environ.get("LETTA_TOKEN_FILE")
+MODEL = os.environ.get("LETTA_MODEL")
+
+if not MODEL:
+    raise SystemExit("LETTA_MODEL is required (a model handle your server has)")
 
 PASS: list[str] = []
 FAIL: list[str] = []

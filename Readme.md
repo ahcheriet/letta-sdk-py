@@ -29,18 +29,19 @@ pip install -e .
 ## Quick start
 
 ```python
+import os
 from letta_sdk import LettaAgentClient, CreateAgentOptions, QueryOptions
 
 client = LettaAgentClient(
-    url="ws://127.0.0.1:4500/ws",
-    token_file="/root/.letta/app-server-token",
+    url=os.environ.get("LETTA_APP_SERVER_URL"),       # optional — SDK default
+    token_file=os.environ.get("LETTA_TOKEN_FILE"),    # optional if no auth
 )
 
 # 1. Create an agent
 agent_id = await client.create_agent(
     CreateAgentOptions(
         name="demo",
-        model="openai-compatible/Qwen3.8-27B",
+        model=os.environ["LETTA_MODEL"],   # a handle your server has configured
         system_prompt="You are a helpful, concise assistant.",
     )
 )
@@ -86,7 +87,7 @@ from letta_sdk import QueryOptions
 
 async for message in client.query(
     "What is the capital of France?",
-    QueryOptions(model="openai-compatible/Qwen3.8-27B", system="Answer directly."),
+    QueryOptions(model=os.environ["LETTA_MODEL"], system="Answer directly."),
 ):
     if message.type == "assistant":
         print(message.content, end="")

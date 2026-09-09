@@ -11,10 +11,9 @@ JSON-over-WebSocket protocol (not the REST API):
 
 Typical usage::
 
-    async with LettaAgentClient(url="ws://127.0.0.1:4500/ws",
-                                auth_token=token) as client:
+    async with LettaAgentClient() as client:      # endpoint/token from env
         agent_id = await client.create_agent(
-            CreateAgentOptions(name="demo", model="openai-compatible/Qwen3.8-27B",
+            CreateAgentOptions(name="demo", model="<provider>/<model>",
                                system_prompt="You are a helpful assistant.")
         )
         session = client.resume_session(agent_id)

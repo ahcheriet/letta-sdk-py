@@ -18,9 +18,10 @@ Main entry point. One client = one websocket endpoint. Sessions each open
 their own WebSocket; the management surface shares one pooled connection.
 
 ```python
+import os
 client = LettaAgentClient(
-    url="ws://127.0.0.1:4500/ws",
-    token_file="/root/.letta/app-server-token",
+    url=os.environ.get("LETTA_APP_SERVER_URL"),       # optional — SDK default
+    token_file=os.environ.get("LETTA_TOKEN_FILE"),    # optional if no auth
     request_timeout=60,
 )
 ```
@@ -172,7 +173,7 @@ All methods are `async` and return plain dicts as the server sends them.
 | --- | --- | --- |
 | `name` | `str \| None` | `name` |
 | `description` | `str \| None` | `description` |
-| `model` | `str \| None` | `model` (model handle, e.g. `openai-compatible/Qwen3.8-27B`) |
+| `model` | `str \| None` | `model` (model handle, e.g. `openai/gpt-5.5`) |
 | `system_prompt` | `str \| None` | `system` |
 | `embedding` | `str \| None` | `embedding` |
 | `memory_blocks` | `list[dict]` | `memory` (blocks: `{"label", "value", "description"?}`) |
@@ -308,7 +309,7 @@ Raw websocket transport (used directly by advanced users, via
 
 ```python
 conn = AppServerConnection(
-    url="ws://127.0.0.1:4500/ws",
+    url="<your app-server ws endpoint>",  # or the SDK default
     auth_token="...",            # or api_key= / token_file=
     request_timeout=30,          # default per-request timeout
     connect_timeout=15,          # handshake timeout

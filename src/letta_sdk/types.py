@@ -254,7 +254,7 @@ class CreateAgentOptions:
 
     name: str | None = None
     description: str | None = None
-    #: Model handle, e.g. ``"openai/gpt-5.5"`` or ``"openai-compatible/Qwen3.8-27B"``.
+    #: Model handle, e.g. ``"openai/gpt-5.5"``.
     model: str | None = None
     #: System prompt (a full string, or a preset name handled server-side).
     system_prompt: str | None = None
