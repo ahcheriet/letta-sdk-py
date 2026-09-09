@@ -7,6 +7,9 @@ class AgentsManager:
     def __init__(self, client: Any) -> None:
         self._client = client
 
+    async def create(self, **kwargs: Any) -> Any:
+        return await self._client.agents.create(**kwargs)
+
     async def list(self, **kwargs: Any) -> Any:
         return await self._client.agents.list(**kwargs)
 

@@ -78,7 +78,7 @@ class CreateSessionOptions:
     extra_body: dict[str, Any] = field(default_factory=dict)
 
     def create_payload(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {}
+        payload: dict[str, Any] = dict(self.extra_body)
         if self.model is not None:
             payload["model"] = self.model
         if self.summary is not None:
