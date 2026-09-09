@@ -190,11 +190,19 @@ stop reason).
  "permission_suggestions": [...], "runtime": {...}}
 ```
 
-The SDK answers via an `input` payload of kind `approval_response`:
+The SDK resolves the decision with the TypeScript SDK's
+`resolveAppServerToolApproval` ordering and answers via an `input` payload
+of kind `approval_response`:
 
-- with a `can_use_tool` callback → the callback's `CanUseToolDecision`;
-- without one → `deny` with an explanatory message, except `EnterPlanMode`
-  which is auto-allowed (headless default, mirroring the TypeScript SDK).
+1. tool in `{AskUserQuestion, ExitPlanMode}` (runtime user input) without
+   a `can_use_tool` callback → `deny`;
+2. session `permission_mode` normalizes to unrestricted
+   (`unrestricted` / legacy `bypassPermissions` / `fullAccess`) and the
+   tool is not runtime-user-input → `allow` (callback not consulted);
+3. `can_use_tool` callback → its `CanUseToolDecision` (raising callback →
+   `deny`);
+4. `EnterPlanMode` → `allow` (headless default);
+5. otherwise → `deny`.
 
 ## 7. Conversations, the `default` virtual conversation
 

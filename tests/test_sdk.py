@@ -913,5 +913,172 @@ async def test_control_request_denied_without_callback():
     assert approvals
     decision = approvals[0]["payload"]["decision"]
     assert decision["behavior"] == "deny"
-    assert "No can_use_tool callback" in decision["message"]
+    assert "No canUseTool callback" in decision["message"]
     await session.close()
+
+
+async def test_control_request_unrestricted_mode_allows_without_callback():
+    for mode in ("unrestricted", "bypassPermissions", "fullAccess"):
+        conn = FakeAppServerConnection()
+        conn.set_response("runtime_start", ready_response())
+        client = make_client(conn)
+        session = client.create_session(
+            "agent-1", CreateSessionOptions(permission_mode=mode)
+        )
+        await session.ready()
+        conn.push(
+            {
+                "type": "control_request",
+                "subtype": "can_use_tool",
+                "request_id": f"req-{mode}",
+                "tool_name": "run_command",
+                "input": {"command": "ls"},
+                "runtime": {"agent_id": "agent-1", "conversation_id": "conv-1"},
+            }
+        )
+        await asyncio.sleep(0.02)
+        approvals = [
+            p
+            for p in conn.sent
+            if p.get("type") == "input"
+            and p.get("payload", {}).get("kind") == "approval_response"
+        ]
+        assert approvals, f"{mode}: no approval_response sent"
+        decision = approvals[0]["payload"]["decision"]
+        assert decision["behavior"] == "allow", f"{mode} should auto-allow"
+        await session.close()
+
+
+async def test_control_request_unrestricted_mode_never_skips_user_input_tools():
+    """AskUserQuestion / ExitPlanMode need real user input — no auto-allow."""
+    for tool_name in ("AskUserQuestion", "ExitPlanMode"):
+        conn = FakeAppServerConnection()
+        conn.set_response("runtime_start", ready_response())
+        client = make_client(conn)
+        session = client.create_session(
+            "agent-1", CreateSessionOptions(permission_mode="unrestricted")
+        )
+        await session.ready()
+        conn.push(
+            {
+                "type": "control_request",
+                "subtype": "can_use_tool",
+                "request_id": f"req-{tool_name}",
+                "tool_name": tool_name,
+                "input": {},
+                "runtime": {"agent_id": "agent-1", "conversation_id": "conv-1"},
+            }
+        )
+        await asyncio.sleep(0.02)
+        approvals = [
+            p
+            for p in conn.sent
+            if p.get("type") == "input"
+            and p.get("payload", {}).get("kind") == "approval_response"
+        ]
+        assert approvals, f"{tool_name}: no approval_response sent"
+        decision = approvals[0]["payload"]["decision"]
+        assert decision["behavior"] == "deny", f"{tool_name} must not auto-allow"
+        assert "No canUseTool callback" in decision["message"]
+        await session.close()
+
+
+async def test_control_request_unrestricted_mode_bypasses_callback():
+    """Unrestricted mode: callback is NOT consulted for normal tools, but
+    still consulted for runtime-user-input tools (TS parity)."""
+    conn = FakeAppServerConnection()
+    conn.set_response("runtime_start", ready_response())
+    client = make_client(conn)
+    called: list[str] = []
+
+    def can_use_tool(name: str, tool_input: dict[str, Any], context: dict[str, Any]):
+        called.append(name)
+        return CanUseToolDecision(behavior="deny", message="nope")
+
+    session = client.create_session(
+        "agent-1",
+        CreateSessionOptions(permission_mode="unrestricted", can_use_tool=can_use_tool),
+    )
+    await session.ready()
+
+    # normal tool → auto-allowed, callback untouched
+    conn.push(
+        {
+            "type": "control_request",
+            "subtype": "can_use_tool",
+            "request_id": "req-normal",
+            "tool_name": "memory",
+            "input": {"command": "str_replace"},
+            "runtime": {"agent_id": "agent-1", "conversation_id": "conv-1"},
+        }
+    )
+    await asyncio.sleep(0.02)
+
+    # user-input tool → callback consulted
+    conn.push(
+        {
+            "type": "control_request",
+            "subtype": "can_use_tool",
+            "request_id": "req-userinput",
+            "tool_name": "AskUserQuestion",
+            "input": {"question": "which one?"},
+            "runtime": {"agent_id": "agent-1", "conversation_id": "conv-1"},
+        }
+    )
+    await asyncio.sleep(0.02)
+
+    assert called == ["AskUserQuestion"], called
+    approvals = [
+        p
+        for p in conn.sent
+        if p.get("type") == "input" and p.get("payload", {}).get("kind") == "approval_response"
+    ]
+    by_request = {
+        p["payload"]["request_id"]: p["payload"]["decision"] for p in approvals
+    }
+    assert by_request["req-normal"]["behavior"] == "allow"
+    assert by_request["req-userinput"]["behavior"] == "deny"
+    assert by_request["req-userinput"]["message"] == "nope"
+    await session.close()
+
+
+def test_can_use_tool_decision_wire_parity():
+    """to_wire mirrors the TS toAppServerApprovalDecision mapping."""
+    # deny: only behavior + message (interrupt dropped, default message filled)
+    assert CanUseToolDecision(behavior="deny").to_wire() == {
+        "behavior": "deny",
+        "message": "Denied by canUseTool callback",
+    }
+    assert CanUseToolDecision(behavior="deny", message="m", interrupt=True).to_wire() == {
+        "behavior": "deny",
+        "message": "m",
+    }
+
+    # allow: updatedPermissions → selected_permission_suggestion_ids mapping
+    wire = CanUseToolDecision(
+        behavior="allow",
+        updated_permissions=[
+            {"suggestion_id": "s1"},
+            "s2",
+            42,  # dropped
+            {"id": "s3"},
+            {"permission_suggestion_id": "s4"},
+            {},  # dropped
+        ],
+    ).to_wire()
+    assert wire == {
+        "behavior": "allow",
+        "updated_input": None,
+        "selected_permission_suggestion_ids": ["s1", "s2", "s3", "s4"],
+    }
+
+    # allow with message + updated_input
+    wire = CanUseToolDecision(
+        behavior="allow", message="ok", updated_input={"a": 1}, interrupt=False
+    ).to_wire()
+    assert wire == {
+        "behavior": "allow",
+        "updated_input": {"a": 1},
+        "selected_permission_suggestion_ids": [],
+        "message": "ok",
+    }

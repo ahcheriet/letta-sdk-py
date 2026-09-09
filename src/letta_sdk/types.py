@@ -491,9 +491,29 @@ class CreateSessionOptions:
     extra_body: dict[str, Any] = field(default_factory=dict)
 
 
+def permission_suggestion_id(value: Any) -> str | None:
+    """Extract a stable id from a permission suggestion (TS parity).
+
+    Accepts a bare string or an object with ``id`` / ``suggestion_id`` /
+    ``permission_suggestion_id``; anything else yields ``None``.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("id", "suggestion_id", "permission_suggestion_id"):
+            candidate = value.get(key)
+            if isinstance(candidate, str):
+                return candidate
+    return None
+
+
 @dataclass(slots=True, kw_only=True)
 class CanUseToolDecision:
-    """Decision returned by a ``can_use_tool`` callback."""
+    """Decision returned by a ``can_use_tool`` callback.
+
+    Mirrors the TypeScript SDK's ``CanUseToolResponse``; :meth:`to_wire`
+    mirrors the TS ``toAppServerApprovalDecision`` wire mapping.
+    """
 
     #: ``"allow"`` or ``"deny"``.
     behavior: str
@@ -501,17 +521,30 @@ class CanUseToolDecision:
     message: str | None = None
     #: Optional replacement tool input (allow only).
     updated_input: dict[str, Any] | None = None
+    #: Permission suggestions granted with an allow (TS ``updatedPermissions``);
+    #: mapped to ``selected_permission_suggestion_ids`` on the wire.
+    updated_permissions: list[Any] | None = None
+    #: TS parity field — accepted from callbacks but never sent on the wire
+    #: (the TS wire mapper drops it).
+    interrupt: bool | None = None
 
     def to_wire(self) -> dict[str, Any]:
         if self.behavior == "deny":
             return {
                 "behavior": "deny",
-                "message": self.message or "Denied by can_use_tool callback",
+                "message": self.message or "Denied by canUseTool callback",
             }
         wire: dict[str, Any] = {
             "behavior": "allow",
             "updated_input": self.updated_input,
-            "selected_permission_suggestion_ids": [],
+            "selected_permission_suggestion_ids": [
+                suggestion_id
+                for suggestion_id in (
+                    permission_suggestion_id(item)
+                    for item in (self.updated_permissions or [])
+                )
+                if suggestion_id is not None
+            ],
         }
         if self.message is not None:
             wire["message"] = self.message

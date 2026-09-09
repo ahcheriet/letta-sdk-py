@@ -256,16 +256,33 @@ def can_use_tool(tool_name: str, tool_input: dict, context: dict) -> CanUseToolD
 
 decision = CanUseToolDecision(behavior="allow")          # or
 decision = CanUseToolDecision(behavior="deny", message="not allowed")
-decision = CanUseToolDecision(behavior="allow", updated_input={...})
+decision = CanUseToolDecision(behavior="allow", updated_input={...},
+                              updated_permissions=["suggestion-id"])  # or suggestion objects
 ```
 
 `context` carries the raw request fields: `request_id`, `tool_call_id`,
 `permission_suggestions`, `blocked_path`, `diffs`. The callback may be sync
-or async; returning a dict is also accepted. Without a callback the SDK
-assumes **server-side auto-approval** (the turn stays open across
-`requires_approval` stops); a backend that sends `control_request`
-approvals without a callback gets a `deny` decision
-(`EnterPlanMode` is auto-allowed headless, mirroring the TypeScript SDK).
+or async; returning a dict is also accepted. Decision fields: `behavior`,
+`message`, `updated_input`, `updated_permissions` (mapped to
+`selected_permission_suggestion_ids` on the wire via `id` /
+`suggestion_id` / `permission_suggestion_id`), `interrupt` (TS parity
+field — accepted, never sent on the wire).
+
+**Decision order** (port of the TS `resolveAppServerToolApproval`):
+
+1. Tool requires real user input (`AskUserQuestion`, `ExitPlanMode`) and
+   no callback → `deny` (never auto-allowed).
+2. Session `permission_mode` normalizes to **unrestricted**
+   (`"unrestricted"`, legacy `"bypassPermissions"` / `"fullAccess"`) and
+   the tool is not user-input → **allow without consulting the callback**.
+3. Callback registered → its decision (a raising callback → `deny`).
+4. `EnterPlanMode` → allow (headless default, mirroring the TypeScript
+   SDK).
+5. Otherwise → `deny` (`"No canUseTool callback registered"`).
+
+Without a callback the SDK assumes **server-side auto-approval** for the
+`requires_approval` stop path (the turn stays open across those stops and
+completes on the server's follow-up run).
 
 ---
 

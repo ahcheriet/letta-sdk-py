@@ -77,6 +77,29 @@ TRAILING_USAGE_GRACE_SECONDS = 0.15
 #: (mirrors the TypeScript SDK's headless policy).
 HEADLESS_AUTO_ALLOW_TOOLS = {"EnterPlanMode"}
 
+#: Tools that require real user input — never auto-allowed, even in
+#: unrestricted permission mode (TS ``interactiveToolPolicy`` parity).
+RUNTIME_USER_INPUT_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
+
+#: Interactive approval tools (TS ``interactiveToolPolicy`` parity).
+INTERACTIVE_APPROVAL_TOOLS = {"AskUserQuestion", "EnterPlanMode", "ExitPlanMode"}
+
+#: Permission-mode values that normalize to ``unrestricted`` — the current
+#: name plus the legacy aliases (TS ``normalizePermissionMode`` parity).
+_UNRESTRICTED_PERMISSION_MODES = {"unrestricted", "bypassPermissions", "fullAccess"}
+
+
+def _is_unrestricted_permission_mode(mode: str | None) -> bool:
+    """True when the session permission mode normalizes to ``unrestricted``.
+
+    Port of the TS ``normalizePermissionMode`` + ``isUnrestrictedPermissionMode``
+    pair: ``None``/``"default"`` → standard; ``"bypassPermissions"`` /
+    ``"fullAccess"`` → unrestricted; ``standard``/``acceptEdits`` /
+    ``unrestricted``/``strict`` pass through; anything else is unknown
+    (never unrestricted).
+    """
+    return isinstance(mode, str) and mode in _UNRESTRICTED_PERMISSION_MODES
+
 _FAILURE_STOP_REASONS = {
     "error",
     "llm_api_error",
@@ -801,14 +824,43 @@ class LettaSession:
         tool_input: dict[str, Any],
         context: dict[str, Any],
     ) -> dict[str, Any]:
+        """Resolve a tool-approval request.
+
+        Port of the TS ``resolveAppServerToolApproval`` ordering:
+        1. runtime-user-input tool without a callback → deny;
+        2. unrestricted permission mode (non-user-input tool) → allow,
+           callback not consulted;
+        3. callback → its decision (error → deny);
+        4. headless auto-allow tools (``EnterPlanMode``) → allow;
+        5. otherwise → deny.
+        """
         callback = self._options.can_use_tool
-        if callback is not None:
+        has_callback = callback is not None
+        tool_needs_runtime_user_input = tool_name in RUNTIME_USER_INPUT_TOOLS
+
+        if tool_needs_runtime_user_input and not has_callback:
+            return {
+                "behavior": "deny",
+                "message": "No canUseTool callback registered",
+            }
+
+        if (
+            _is_unrestricted_permission_mode(self._options.permission_mode)
+            and not tool_needs_runtime_user_input
+        ):
+            return {
+                "behavior": "allow",
+                "updated_input": None,
+                "selected_permission_suggestion_ids": [],
+            }
+
+        if has_callback:
             try:
                 result = callback(tool_name, tool_input, context)
                 if inspect.isawaitable(result):
                     result = await result
             except Exception as exc:
-                return {"behavior": "deny", "message": f"can_use_tool callback failed: {exc}"}
+                return {"behavior": "deny", "message": str(exc) or "Callback error"}
             if isinstance(result, CanUseToolDecision):
                 return result.to_wire()
             if isinstance(result, dict):
@@ -817,13 +869,14 @@ class LettaSession:
                 "behavior": "deny",
                 "message": f"can_use_tool callback returned {type(result).__name__}",
             }
+
         if tool_name in HEADLESS_AUTO_ALLOW_TOOLS:
             return {
                 "behavior": "allow",
                 "updated_input": None,
                 "selected_permission_suggestion_ids": [],
             }
-        return {"behavior": "deny", "message": "No can_use_tool callback registered"}
+        return {"behavior": "deny", "message": "No canUseTool callback registered"}
 
     def _handle_turn_finished(self, message: dict[str, Any]) -> None:
         run_id = message.get("run_id") or message.get("runId")
