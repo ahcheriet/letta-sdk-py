@@ -26,8 +26,8 @@ from letta_sdk import (
 from _env import client_kwargs, model
 
 
-async def get_utc_now(args: dict) -> dict:
-    """A tool handler: async, takes the tool arguments, returns JSON-able."""
+async def get_utc_now(tool_call_id: str, args: dict) -> dict:
+    """A tool handler: async (tool_call_id, args) -> JSON-able result."""
     return {"utc_now": datetime.now(timezone.utc).isoformat(timespec="seconds")}
 
 

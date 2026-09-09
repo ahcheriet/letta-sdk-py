@@ -218,7 +218,7 @@ ToolSpec(
     label="Get Time",            # optional, defaults to name
     description="Current UTC time",
     parameters={"type": "object", "properties": {}},
-    execute=async_fn,            # async (args: dict) -> result (JSON-able)
+    execute=async_fn,            # async (tool_call_id: str, args: dict) -> result (JSON-able)
 )
 ```
 

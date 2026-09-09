@@ -150,9 +150,10 @@ Other kinds:
    description, parameters}]` for each `ToolSpec`.
 2. When the model calls one, the server pushes `external_tool_call_request`
    (same run, turn stays open).
-3. The SDK runs the registered `execute(args)` in this process and answers
-   with the tool-result `input` payload. A missing/raising `execute` is
-   reported back as a typed error — never a hang.
+3. The SDK runs the registered `execute(tool_call_id, args)` in this
+   process and answers with the tool-result `input` payload (matching the
+   TypeScript SDK's `execute(toolCallId, args)` contract). A missing or
+   raising `execute` is reported back as a typed error — never a hang.
 
 ### 6.2 Server-side tool approvals
 
