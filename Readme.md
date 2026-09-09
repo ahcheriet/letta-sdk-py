@@ -10,6 +10,11 @@ call, and status update in real time.
 
 ## Requirements
 
+## Documentation
+
+- [docs/api-reference.md](docs/api-reference.md) — full API reference
+- [docs/protocol.md](docs/protocol.md) — the app-server wire protocol as the SDK speaks it
+
 - Python **3.11+**
 - A running Letta Code app server (the local harness or a remote one),
   e.g. `letta server --listen ws://0.0.0.0:4500`
