@@ -123,3 +123,4 @@ Why it works:
 | `AppServerRequestError: ...401...` | token missing/wrong — set `LETTA_TOKEN_FILE`/`LETTA_TOKEN` |
 | `AppServerTimeoutError` | server busy or model overloaded — retry, or raise `request_timeout` |
 | `query()` fails with a 401 cloud message | your server doesn't support agent-free conversations — use an agent-based session instead |
+| model says "image omitted: model does not support images" | the SDK sent the image fine — the **model handle is text-only**. Point `LETTA_MODEL` at a vision-capable model (e.g. a Qwen-VL / GPT-4o-class endpoint) and re-run |
