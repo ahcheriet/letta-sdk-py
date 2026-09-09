@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "letta-sdk-py"
+version = "0.1.0"
+description = "A pythonic SDK for working with Letta agents"
+readme = "Readme.md"
+requires-python = ">=3.11"
+dependencies = [
+  "letta-client==1.12.1",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
