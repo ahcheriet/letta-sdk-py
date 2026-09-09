@@ -168,7 +168,13 @@ class LettaSdkTests(unittest.IsolatedAsyncioTestCase):
 
         session = await client.create_session(
             "agent-xyz",
-            CreateSessionOptions(model="model-b", summary="Sprint", description="Planning", hidden=True),
+            CreateSessionOptions(
+                model="model-b",
+                summary="Sprint",
+                description="Planning",
+                hidden=True,
+                extra_body={"metadata": {"team": "sdk"}},
+            ),
         )
         history = await session.list_messages(limit=20)
 
@@ -178,9 +184,19 @@ class LettaSdkTests(unittest.IsolatedAsyncioTestCase):
             "summary": "Sprint",
             "description": "Planning",
             "hidden": True,
+            "metadata": {"team": "sdk"},
         })
         self.assertEqual(history["conversation_id"], "conv-created")
         self.assertEqual(fake.conversations.messages.list_calls[0], ("conv-created", {"limit": 20}))
+
+    async def test_agents_manager_can_create_agents(self) -> None:
+        fake = FakeAsyncLetta()
+        client = LettaAgentClient(client=fake)
+
+        agent = await client.agents.create(name="Nora")
+
+        self.assertEqual(agent.id, "agent-created")
+        self.assertEqual(fake.agents.create_calls, [{"name": "Nora"}])
 
     async def test_query_uses_ephemeral_conversation_endpoint(self) -> None:
         fake = FakeAsyncLetta(
