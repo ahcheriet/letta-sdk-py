@@ -213,6 +213,17 @@ def _read_number(record: dict[str, Any], field_name: str) -> int | float | None:
     return value if math.isfinite(value) else None
 
 
+def _as_int_cursor(value: int | float | None) -> int | None:
+    """Wire seq cursors: integral numbers only (``2.0`` accepted, ``2.5`` not)."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
 def _max_defined(
     next_value: int | None, previous: int | None
 ) -> int | None:
@@ -260,22 +271,6 @@ def _tool_status(
     if row.result is not None:
         return "complete"
     return "ready" if row.arguments_complete else "streaming"
-
-
-def _seq_id_from_raw(raw: Any) -> int | None:
-    """Recover ``seq_id`` from the raw wire delta.
-
-    The Python ``ToolCallMessage`` / ``ToolResultMessage`` projections do not
-    carry a ``seq_id`` field (the wire does); it is read back from the raw
-    ``stream_delta`` payload they always retain.
-    """
-    if not isinstance(raw, dict):
-        return None
-    delta = raw.get("stream_delta")
-    if not isinstance(delta, dict):
-        return None
-    value = _read_number(delta, "seq_id")
-    return value if isinstance(value, int) else None
 
 
 def _extract_text_from_content(content: Any) -> str | None:
@@ -612,6 +607,8 @@ class TranscriptAccumulator:
             )
             return
         if isinstance(message, ToolCallMessage):
+            # TS parity: apply() passes no seqId to tool merges, so live
+            # tool messages are never replay-suppressed (merges are idempotent).
             self._merge_tool_call(
                 _ToolCallMerge(
                     tool_call_id=message.tool_call_id,
@@ -621,7 +618,6 @@ class TranscriptAccumulator:
                     raw_arguments=message.raw_arguments,
                     uuid=message.uuid,
                     run_id=message.run_id,
-                    seq_id=_seq_id_from_raw(message.raw),
                 )
             )
             return
@@ -633,7 +629,6 @@ class TranscriptAccumulator:
                     is_error=message.is_error,
                     uuid=message.uuid,
                     run_id=message.run_id,
-                    seq_id=_seq_id_from_raw(message.raw),
                 )
             )
             return
@@ -667,7 +662,7 @@ class TranscriptAccumulator:
                 uuid=payload_id if identified else f"{delta.kind}{_SEP}live",
                 otid=otid,
                 run_id=_read_string(payload, "run_id"),
-                seq_id=payload_seq if isinstance(payload_seq, int) else None,
+                seq_id=_as_int_cursor(payload_seq),
             )
         )
 
@@ -930,10 +925,7 @@ class TranscriptAccumulator:
         uuid = _read_string(record, "id")
         otid = _read_string(record, "otid")
         run_id = _read_string(record, "run_id")
-        raw_seq_id = _read_number(record, "seq_id")
-        # The wire carries integer cursors (session.py's ``_as_int`` agrees);
-        # non-integral values are treated as absent.
-        seq_id = raw_seq_id if isinstance(raw_seq_id, int) else None
+        seq_id = _as_int_cursor(_read_number(record, "seq_id"))
 
         # A history page proves every position up to its own cursor for that
         # run, so replayed deltas at or below it are suppressed after the
@@ -964,7 +956,7 @@ class TranscriptAccumulator:
                 if isinstance(reasoning, str)
                 else _extract_text_from_content(record.get("content"))
             )
-            if not isinstance(text, str) or not text:
+            if not isinstance(text, str):
                 return None
             return self._write_text(
                 _TextSlice(

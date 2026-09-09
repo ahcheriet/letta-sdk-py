@@ -46,11 +46,14 @@ def _extract_text_from_content(content: Any) -> str | None:
     return None
 
 
-def extract_stream_text_delta(event: dict[str, Any]) -> StreamTextDelta | None:
+def extract_stream_text_delta(event: Any) -> StreamTextDelta | None:
     """Extract appendable assistant/reasoning text from a stream_event payload.
 
-    Returns ``None`` when the payload carries no appendable text.
+    Returns ``None`` when the payload is not a dict or carries no
+    appendable text (TS parity).
     """
+    if not isinstance(event, dict):
+        return None
     delta = event.get("delta")
     if isinstance(delta, dict):
         reasoning = delta.get("reasoning")

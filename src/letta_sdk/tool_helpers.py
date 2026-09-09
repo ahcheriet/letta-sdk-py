@@ -18,7 +18,7 @@ from .types import ToolResult
 def json_result(payload: Any) -> ToolResult:
     """Create a JSON tool result: pretty-printed text plus raw ``details``."""
     return ToolResult(
-        content=[{"type": "text", "text": json.dumps(payload, indent=2)}],
+        content=[{"type": "text", "text": json.dumps(payload, indent=2, ensure_ascii=False)}],
         details=payload,
     )
 
