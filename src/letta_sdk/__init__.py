@@ -1,5 +1,20 @@
+"""Letta Agent SDK (Python) — a pythonic SDK for Letta agents.
+
+Built on the Letta Code **app server** websocket protocol (agent SDK v2),
+the same protocol the TypeScript ``@letta-ai/letta-agent-sdk`` speaks.
+"""
+
 from __future__ import annotations
 
+from typing import Any
+
+from .app_server import (
+    AppServerClosedError,
+    AppServerConnection,
+    AppServerError,
+    AppServerRequestError,
+    AppServerTimeoutError,
+)
 from .client import LettaAgentClient
 from .images import image_from_base64, image_from_file
 from .query import QueryStream
@@ -10,38 +25,57 @@ from .types import (
     Backend,
     CreateAgentOptions,
     CreateSessionOptions,
+    DEFAULT_APP_SERVER_URL,
     ErrorMessage,
+    LoopStatusMessage,
     MessageContentPart,
     PingMessage,
     QueryOptions,
     ReasoningMessage,
     ResultMessage,
+    RetryMessage,
+    SDKInitMessage,
     SDKMessage,
     SendMessage,
+    StreamEventMessage,
     ToolCallMessage,
+    ToolResult,
     ToolResultMessage,
+    ToolSpec,
     UsageMessage,
     text_content,
 )
 
 __all__ = [
+    "AppServerClosedError",
+    "AppServerConnection",
+    "AppServerError",
+    "AppServerRequestError",
+    "AppServerTimeoutError",
     "AssistantMessage",
     "Backend",
     "CreateAgentOptions",
     "CreateSessionOptions",
+    "DEFAULT_APP_SERVER_URL",
     "ErrorMessage",
     "LettaAgentClient",
     "LettaSession",
+    "LoopStatusMessage",
     "MessageContentPart",
     "PingMessage",
     "QueryOptions",
     "QueryStream",
     "ReasoningMessage",
     "ResultMessage",
+    "RetryMessage",
+    "SDKInitMessage",
     "SDKMessage",
     "SendMessage",
+    "StreamEventMessage",
     "ToolCallMessage",
+    "ToolResult",
     "ToolResultMessage",
+    "ToolSpec",
     "TranscriptAccumulator",
     "UsageMessage",
     "create_agent",
@@ -55,31 +89,46 @@ __all__ = [
 ]
 
 
+def _managed(
+    client: LettaAgentClient | None,
+    **client_kwargs: Any,
+) -> tuple[LettaAgentClient, bool]:
+    if client is not None:
+        return client, False
+    return LettaAgentClient(**client_kwargs), True
+
+
 async def create_agent(
     options: CreateAgentOptions | None = None,
     *,
     client: LettaAgentClient | None = None,
-    **client_kwargs: object,
+    **client_kwargs: Any,
 ) -> str:
-    managed_client = client or LettaAgentClient(**client_kwargs)
+    """Create an agent and return its id (closes a self-managed client)."""
+    managed_client, managed = _managed(client, **client_kwargs)
     try:
         return await managed_client.create_agent(options)
     finally:
-        if client is None:
+        if managed:
             await managed_client.close()
 
 
-async def create_session(
+def create_session(
     agent_id: str,
     options: CreateSessionOptions | None = None,
     *,
     client: LettaAgentClient | None = None,
-    **client_kwargs: object,
+    **client_kwargs: Any,
 ) -> LettaSession:
-    managed_client = client or LettaAgentClient(**client_kwargs)
-    session = await managed_client.create_session(agent_id, options)
-    if client is None:
-        session._owns_client = True
+    """Open a session on a new conversation for ``agent_id``.
+
+    The returned session is lazy: the runtime starts on first use. When the
+    client is self-managed, closing the session closes the client too.
+    """
+    managed_client, managed = _managed(client, **client_kwargs)
+    session = managed_client.create_session(agent_id, options)
+    if managed:
+        session.attach_owner(managed_client, owns=True)
     return session
 
 
@@ -88,12 +137,14 @@ def resume_session(
     options: CreateSessionOptions | None = None,
     *,
     client: LettaAgentClient | None = None,
-    **client_kwargs: object,
+    **client_kwargs: Any,
 ) -> LettaSession:
-    managed_client = client or LettaAgentClient(**client_kwargs)
+    """Resume an agent (bare id, default conversation) or a conversation
+    (``conv-...`` id)."""
+    managed_client, managed = _managed(client, **client_kwargs)
     session = managed_client.resume_session(identifier, options)
-    if client is None:
-        session._owns_client = True
+    if managed:
+        session.attach_owner(managed_client, owns=True)
     return session
 
 
@@ -102,11 +153,12 @@ def query(
     options: QueryOptions | None = None,
     *,
     client: LettaAgentClient | None = None,
-    **client_kwargs: object,
+    **client_kwargs: Any,
 ) -> QueryStream:
-    managed_client = client or LettaAgentClient(**client_kwargs)
+    """Run one agent-free query in a new ephemeral conversation."""
+    managed_client, managed = _managed(client, **client_kwargs)
     stream = managed_client.query(prompt, options)
-    if client is None:
+    if managed:
         stream.on_close = managed_client.close
     return stream
 
@@ -117,11 +169,12 @@ async def prompt(
     options: CreateSessionOptions | None = None,
     *,
     client: LettaAgentClient | None = None,
-    **client_kwargs: object,
+    **client_kwargs: Any,
 ) -> ResultMessage:
-    managed_client = client or LettaAgentClient(**client_kwargs)
+    """One-shot turn against an agent; returns the terminal result."""
+    managed_client, managed = _managed(client, **client_kwargs)
     try:
         return await managed_client.prompt(agent_id, message, options)
     finally:
-        if client is None:
+        if managed:
             await managed_client.close()

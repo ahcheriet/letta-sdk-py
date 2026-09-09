@@ -1,21 +1,36 @@
+"""Agent-free ephemeral queries.
+
+:meth:`LettaAgentClient.query` returns a :class:`QueryStream`: one-shot,
+single-consumption async iteration over the SDK messages of a new
+agent-free conversation (``runtime_start`` + ``create_conversation``).
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 from .session import LettaSession
-from .types import CreateSessionOptions, QueryOptions, SDKMessage
+from .types import QueryOptions, SDKMessage, SendMessage
 
 
 @dataclass(slots=True)
 class QueryStream:
+    """A one-shot agent-free query stream.
+
+    Consume exactly once::
+
+        async for message in client.query("Hello", options):
+            ...
+    """
+
     client: Any
-    prompt: Any
+    prompt: SendMessage
     options: QueryOptions
     on_close: Any | None = None
-    _session: LettaSession | None = None
-    _started: bool = False
-    _closed: bool = False
+    _session: LettaSession | None = field(default=None, repr=False)
+    _started: bool = field(default=False, repr=False)
+    _closed: bool = field(default=False, repr=False)
 
     def __aiter__(self) -> AsyncIterator[SDKMessage]:
         return self._run()
@@ -24,28 +39,32 @@ class QueryStream:
         if self._closed:
             return
         self._closed = True
-        try:
-            if self._session is not None:
+        if self._session is not None:
+            try:
                 await self._session.close()
-        finally:
-            if self.on_close is not None:
-                await self.on_close()
+            finally:
+                self._session = None
+        if self.on_close is not None:
+            await self.on_close()
 
     async def _run(self) -> AsyncIterator[SDKMessage]:
         if self._started:
             raise RuntimeError("Query streams can only be consumed once.")
         self._started = True
         try:
-            conversation_id = await self.client.create_ephemeral_conversation(self.options)
-            session_options = CreateSessionOptions(
-                max_steps=self.options.max_steps,
-                stream_tokens=self.options.stream_tokens,
-                include_pings=self.options.include_pings,
-                extra_body=dict(self.options.extra_body),
+            options = self.options
+            if not options.model:
+                raise ValueError("query() requires QueryOptions.model.")
+            if not options.system:
+                raise ValueError("query() requires QueryOptions.system.")
+            session = self.client._new_session(
+                create_conversation_body=options.conversation_body(),
+                options=None,
             )
-            self._session = self.client.resume_session(conversation_id, session_options)
-            await self._session.send(self.prompt)
-            async for message in self._session.stream():
+            self._session = session
+            await session.ready()
+            await session.send(self.prompt)
+            async for message in session.stream():
                 yield message
         finally:
             await self.close()

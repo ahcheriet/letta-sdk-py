@@ -1,9 +1,36 @@
+"""High-level client for the Letta Code app server (agent SDK v2 protocol).
+
+:class:`LettaAgentClient` is the Python counterpart of the TypeScript
+``@letta-ai/letta-agent-sdk`` client. It speaks the app-server
+JSON-over-WebSocket protocol (not the REST API):
+
+* each **session** owns (or borrows) one websocket connection and starts a
+  runtime with ``runtime_start``;
+* **management** clients (``agents`` / ``conversations`` / ``models``) share
+  one lazily created pooled connection.
+
+Typical usage::
+
+    async with LettaAgentClient(url="ws://127.0.0.1:4500/ws",
+                                auth_token=token) as client:
+        agent_id = await client.create_agent(
+            CreateAgentOptions(name="demo", model="openai-compatible/Qwen3.8-27B",
+                               system_prompt="You are a helpful assistant.")
+        )
+        session = client.resume_session(agent_id)
+        await session.send("Hello!")
+        async for message in session.stream():
+            print(message)
+            if isinstance(message, ResultMessage):
+                break
+"""
+
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
+from typing import Any, AsyncIterator
 
-from letta_client import AsyncLetta
-
+from .app_server import AppServerConnection, AppServerConnectionLike, load_token_file
 from .management import AgentsManager, ConversationsManager, ModelsManager
 from .query import QueryStream
 from .session import LettaSession
@@ -11,29 +38,83 @@ from .types import (
     Backend,
     CreateAgentOptions,
     CreateSessionOptions,
+    DEFAULT_APP_SERVER_URL,
     QueryOptions,
     ResultMessage,
-    SessionState,
+    SDKMessage,
     SendMessage,
 )
 
 
 class LettaAgentClient:
+    """Client for a Letta Code app server (websocket protocol).
+
+    Parameters
+    ----------
+    backend:
+        ``local`` / ``remote`` / ``app-server`` all use the websocket
+        transport. ``cloud`` is accepted for forward compatibility and not
+        implemented.
+    url / app_server_url:
+        Websocket endpoint (default ``ws://127.0.0.1:4500/ws``).
+    auth_token / api_key:
+        Capability token sent as ``Authorization: Bearer <token>``.
+    token_file:
+        Path to a file containing the capability token (used when no token
+        is passed directly).
+    request_timeout:
+        Default per-request timeout in seconds.
+    connect_timeout:
+        WebSocket connect timeout in seconds.
+    connection:
+        Pre-built :class:`AppServerConnection` to reuse (sessions and
+        management share it; the client does not close it).
+    connect_factory:
+        Test seam passed through to :class:`AppServerConnection`.
+    """
+
     def __init__(
         self,
         *,
-        backend: Backend | str = Backend.CLOUD,
+        backend: Backend | str = Backend.LOCAL,
+        url: str | None = None,
+        app_server_url: str | None = None,
+        auth_token: str | None = None,
         api_key: str | None = None,
-        base_url: str | None = None,
-        timeout: float | None = None,
-        client: Any | None = None,
+        token_file: str | Path | None = None,
+        request_timeout: float | None = None,
+        connect_timeout: float = 15.0,
+        connection: AppServerConnectionLike | None = None,
+        connect_factory: Any | None = None,
     ) -> None:
-        self.backend = Backend(backend)
-        self._owns_client = client is None
-        self._client = client or AsyncLetta(**self._client_kwargs(api_key=api_key, base_url=base_url, timeout=timeout))
-        self.agents = AgentsManager(self._client)
-        self.conversations = ConversationsManager(self._client)
-        self.models = ModelsManager(self._client)
+        backend = Backend(backend)
+        if backend is Backend.CLOUD:
+            raise ValueError(
+                "The 'cloud' backend is not supported by this SDK yet; use "
+                "'local', 'remote', or 'app-server' with a websocket endpoint."
+            )
+        self.backend = backend
+        self.url = url or app_server_url or DEFAULT_APP_SERVER_URL
+        self._request_timeout = request_timeout
+        self._connect_timeout = connect_timeout
+        self._connect_factory = connect_factory
+
+        token = auth_token if auth_token is not None else api_key
+        if token is None and token_file is not None:
+            token = load_token_file(token_file)
+        self._auth_token = token
+
+        self._injected = connection
+        self._owns_injected = False  # user-provided connections are user-owned
+        self._management_connection: AppServerConnectionLike | None = None
+        self._closed = False
+
+        provider = self._management_connection_provider
+        self.agents = AgentsManager(provider)
+        self.conversations = ConversationsManager(provider)
+        self.models = ModelsManager(provider)
+
+    # ── lifecycle ────────────────────────────────────────────────
 
     async def __aenter__(self) -> LettaAgentClient:
         return self
@@ -42,51 +123,113 @@ class LettaAgentClient:
         await self.close()
 
     async def close(self) -> None:
-        if not self._owns_client:
+        if self._closed:
             return
-        result = self._client.close()
-        if hasattr(result, "__await__"):
-            await result
+        self._closed = True
+        pool = self._management_connection
+        self._management_connection = None
+        if pool is not None:
+            await pool.close()
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    # ── connections ──────────────────────────────────────────────
+
+    def _management_connection_provider(self) -> AppServerConnectionLike:
+        if self._closed:
+            raise RuntimeError("Client is closed")
+        if self._injected is not None:
+            return self._injected
+        if self._management_connection is None:
+            self._management_connection = self._new_connection()
+        return self._management_connection
+
+    def _new_connection(self) -> AppServerConnectionLike:
+        if self._injected is not None:
+            return self._injected
+        return AppServerConnection(
+            self.url,
+            auth_token=self._auth_token,
+            request_timeout=self._request_timeout,
+            connect_timeout=self._connect_timeout,
+            connect_factory=self._connect_factory,
+        )
+
+    def _new_session(
+        self,
+        *,
+        agent_id: str | None = None,
+        conversation_id: str | None = None,
+        create_agent_body: dict[str, Any] | None = None,
+        create_conversation_body: dict[str, Any] | None = None,
+        new_conversation: bool = False,
+        default_conversation: bool = False,
+        options: CreateSessionOptions | None = None,
+    ) -> LettaSession:
+        if self._closed:
+            raise RuntimeError("Client is closed")
+        return LettaSession(
+            connection=self._new_connection(),
+            owns_connection=self._injected is None,
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            create_agent_body=create_agent_body,
+            create_conversation_body=create_conversation_body,
+            new_conversation=new_conversation,
+            default_conversation=default_conversation,
+            options=options,
+        )
+
+    # ── agents & sessions ────────────────────────────────────────
 
     async def create_agent(self, options: CreateAgentOptions | None = None) -> str:
-        payload = (options or CreateAgentOptions()).to_payload()
-        agent = await self._client.agents.create(**payload)
-        return agent.id
+        """Create an agent (``runtime_start`` + ``create_agent``) and return
+        its id."""
+        body = (options or CreateAgentOptions()).to_body()
+        session = self._new_session(create_agent_body=body)
+        try:
+            init = await session.ready()
+            if not init.agent_id:
+                raise RuntimeError(
+                    "App server agent creation did not return an agent id."
+                )
+            return init.agent_id
+        finally:
+            await session.close()
 
-    async def create_session(
+    def create_session(
         self,
         agent_id: str,
         options: CreateSessionOptions | None = None,
     ) -> LettaSession:
-        session_options = options or CreateSessionOptions()
-        conversation = await self._client.conversations.create(
-            agent_id=agent_id,
-            **session_options.create_payload(),
-        )
-        return LettaSession(
-            _client=self._client,
-            state=SessionState(conversation_id=conversation.id, agent_id=agent_id),
-            _options=session_options,
-        )
+        """Open a session on a new conversation for ``agent_id``.
+
+        Initialization (``runtime_start``) is lazy: it happens on the first
+        ``send()`` / ``ready()`` / ``stream()`` call.
+        """
+        return self._new_session(agent_id=agent_id, options=options)
 
     def resume_session(
         self,
         identifier: str,
         options: CreateSessionOptions | None = None,
     ) -> LettaSession:
-        session_options = options or CreateSessionOptions()
-        if identifier.startswith("conv-"):
-            state = SessionState(conversation_id=identifier)
-        else:
-            state = SessionState(
-                conversation_id="default",
-                agent_id=identifier,
-                is_default_conversation=True,
-            )
-        return LettaSession(_client=self._client, state=state, _options=session_options)
+        """Open a session resuming an agent (and its default conversation)
+        or a conversation (``conv-...`` id)."""
+        if identifier.startswith(("conv-", "conversation-")):
+            return self._new_session(conversation_id=identifier, options=options)
+        return self._new_session(
+            agent_id=identifier, default_conversation=True, options=options
+        )
 
-    def query(self, prompt: Any, options: QueryOptions | None = None) -> QueryStream:
-        return QueryStream(client=self, prompt=prompt, options=options or QueryOptions())
+    # ── one-shot helpers ─────────────────────────────────────────
+
+    def query(self, prompt: SendMessage, options: QueryOptions | None = None) -> QueryStream:
+        """Agent-free ephemeral query (new conversation, no persistent
+        agent)."""
+        return QueryStream(self, prompt, options or QueryOptions())
 
     async def prompt(
         self,
@@ -94,49 +237,24 @@ class LettaAgentClient:
         message: SendMessage,
         options: CreateSessionOptions | None = None,
     ) -> ResultMessage:
-        session = await self.create_session(agent_id, options)
+        """One-shot turn: open a session, send, return the terminal result."""
+        session = self.create_session(agent_id, options)
         try:
-            await session.send(message)
-            async for streamed_message in session.stream():
-                if isinstance(streamed_message, ResultMessage):
-                    return streamed_message
-            raise RuntimeError("Session stream ended without a result message.")
+            return await session.prompt(message)
         finally:
             await session.close()
 
-    async def create_ephemeral_conversation(self, options: QueryOptions) -> str:
-        if not options.model:
-            raise ValueError("query() requires QueryOptions.model.")
-        if not options.system_prompt:
-            raise ValueError("query() requires QueryOptions.system_prompt.")
-        body: dict[str, Any] = {"model": options.model, "system": options.system_prompt}
-        if options.model_settings is not None:
-            body["model_settings"] = options.model_settings
-        if options.context_window_limit is not None:
-            body["context_window_limit"] = options.context_window_limit
-        response = await self._client.post("/v1/conversations/ephemeral", body=body)
-        if isinstance(response, dict):
-            conversation_id = response.get("id")
-        else:
-            conversation_id = getattr(response, "id", None)
-        if not isinstance(conversation_id, str) or not conversation_id:
-            raise RuntimeError("Ephemeral conversation did not return a valid id.")
-        return conversation_id
-
-    def _client_kwargs(
+    async def stream_prompt(
         self,
-        *,
-        api_key: str | None,
-        base_url: str | None,
-        timeout: float | None,
-    ) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {}
-        if api_key is not None:
-            kwargs["api_key"] = api_key
-        if base_url is not None:
-            kwargs["base_url"] = base_url
-        if timeout is not None:
-            kwargs["timeout"] = timeout
-        if self.backend == Backend.LOCAL:
-            kwargs["environment"] = "local"
-        return kwargs
+        agent_id: str,
+        message: SendMessage,
+        options: CreateSessionOptions | None = None,
+    ) -> AsyncIterator[SDKMessage]:
+        """One-shot turn exposing the full stream (ending with a result)."""
+        session = self.create_session(agent_id, options)
+        try:
+            await session.send(message)
+            async for sdk_message in session.stream():
+                yield sdk_message
+        finally:
+            await session.close()
