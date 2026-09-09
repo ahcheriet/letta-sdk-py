@@ -314,12 +314,59 @@ await session.send([
 
 ## Helpers
 
+### Image / content helpers
+
 | helper | signature | notes |
 | --- | --- | --- |
 | `image_from_base64` | `(data: str, media_type: str = "image/png") -> ImageContentPart` | |
 | `image_from_file` | `(path: str \| Path, media_type: str \| None = None) -> ImageContentPart` | media type inferred from the suffix when omitted |
+| `image_from_url` | `(url: str, timeout: float = 30.0) -> MessageContentPart` | stdlib `urllib`; media type from the `Content-Type` header with extension fallback; raises `ValueError` on non-2xx (hardening vs. TS) |
 | `text_content` | `(*parts) -> str` | flatten content parts/messages to plain text |
-| `TranscriptAccumulator` | `acc = TranscriptAccumulator(); acc.add(message); acc.assistant_text` | fold a stream into an accumulated assistant transcript |
+
+### Stream-event text extraction
+
+| helper | signature | notes |
+| --- | --- | --- |
+| `extract_stream_text_delta` | `(event: Any) -> StreamTextDelta \| None` | projects a raw `stream_event` payload onto appendable text. Handles two shapes: content_block style (`{"delta": {"text" \| "reasoning": ...}}`) and message chunk style (`{"message_type": "assistant_message" \| "reasoning_message", ...}`). `None` for non-dicts / no text (TS parity) |
+| `StreamTextDelta` | dataclass `kind: "assistant" \| "reasoning"`, `text: str` | the projected slice |
+
+### Tool helpers (typed tool arguments + results)
+
+Port of the TypeScript SDK's tool helper module.
+
+| helper | signature | notes |
+| --- | --- | --- |
+| `json_result` | `(payload: Any) -> ToolResult` | pretty-prints (`indent=2`, UTF-8 kept) as the result text and attaches the payload as `details` |
+| `read_string_param` | `(args, name, *, required=True, default=None, label=None) -> str \| None` | `ValueError("{label} required")` when required and absent — the error text is what the model sees |
+| `read_number_param` | `(args, name, *, required=True, default=None, integer=False, label=None) -> int \| float \| None` | numeric coercion; `integer=True` additionally validates integrality. Stricter than TS `parseFloat` by design (rejects `"12abc"`) |
+| `read_boolean_param` | `(args, name, *, required=True, default=None, label=None) -> bool \| None` | accepts bools, `"true"/"false"` (case-insensitive), `1/0` |
+| `read_string_array_param` | `(args, name, *, required=True, default=None, label=None) -> list[str] \| None` | accepts a list of strings or a comma/whitespace-separated string |
+
+### Skill helpers (`letta_sdk.skills`)
+
+The portable core of the TypeScript skill loading (everything except the
+Node-only `skill-node.ts` runtime).
+
+| helper | signature | notes |
+| --- | --- | --- |
+| `resolve_skill_items` | `(skills: list[str \| AgentSkill \| dict]) -> list[AgentSkill]` | normalizes directory paths / inline skills / dicts; validates names (pattern, duplicates) |
+| `load_skill_directory` | `(dir_path: str \| Path) -> AgentSkill` | reads `SKILL.md`; frontmatter `name`/`description` + body; directory name as fallback |
+| `parse_skill_markdown` | `(content: str) -> tuple[str \| None, str \| None, str]` | frontmatter parser (YAML folded/literal scalars, quote stripping); no frontmatter → whole content is the body |
+| `skill_memory_blocks` | `(skills: list[AgentSkill]) -> list[dict]` | the `skills/{name}` memory blocks used for seeding |
+| `skills_have_support_files` | `(skills: list[AgentSkill]) -> bool` | `True` if any skill carries `scripts/`, `references/`, … (unsupported on this backend) |
+| `AgentSkill` | dataclass `name`, `description`, `instructions`, `files` | one skill; `files` = support files (rejected by `create_agent` on this backend) |
+
+### Transcript reconciliation
+
+| member | notes |
+| --- | --- |
+| `TranscriptAccumulator` | fold SDK messages into stable, render-ready rows (port of the TS transcript). `add(message)` per streamed message; idempotent under per-run replays (per-run `seq_id` thresholds, 64-run bound, anonymous-run bucket) |
+| `acc.rows` | `list[TranscriptRow]` — text rows (`user`/`assistant`/`reasoning`) carry `text`; tool rows carry `tool_name`, `tool_input`, `result`, `status` |
+| `TranscriptRow` | `kind`, stable `key`, `uuid`/`otid`/`run_id`/`seq_id`, `text` or `tool_*` fields |
+| `TranscriptToolResult` | `content`, `is_error` — the tool row's result |
+| `acc.rebase(page, *, order=...)` | merge a `list_messages()` history page mid-run; `order` = page order (auto-detect when omitted) |
+| `acc.assistant_text` | legacy plain-text accumulation (unchanged pre-rows behavior) |
+| `acc.reset()` | drop all rows, replay state, and the legacy message list |
 
 ---
 

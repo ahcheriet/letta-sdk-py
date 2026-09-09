@@ -42,6 +42,9 @@ matching response dict.
 | `conversation_fork` | `{"conversation_id", ...}` | `conversation_fork_response` | `client.conversations.fork()` |
 | `conversation_messages_list` | `{"conversation_id", "limit", "before", "after", "order"}` | `conversation_messages_list_response` | `session.list_messages()`, `client.conversations.list_messages()` |
 | `list_models` | `{}` | `list_models_response` | `client.models.list()` |
+| `create_agent` | `{"personality", "model"?, "tags"?, "pin_global"?}` | `create_agent_response` `{success, agent_id, name, model}` | **personality** agent creation (server resolves its preset catalog) |
+| `set_reflection_settings` | `{"runtime": {...}, "settings": {"trigger", "step_count"}, "scope": "both"}` | `set_reflection_settings_response` | **dreaming** — sent once, right after a successful `runtime_start` (skipped for `stateless` sessions) |
+| `execute_command` | `{"command_id": "reload", "runtime": {...}}` | `execute_command_response` | app-server settings/mods reload (no SDK method — raw `AppServerConnection.request` only) |
 
 There is **no** `conversation_delete` command in the protocol.
 
@@ -56,7 +59,13 @@ The SDK builds the body in three modes:
 3. **Agent + default conversation** (`resume_session("<agent_id>")`) —
    `{"agent_id": ..., "conversation_id": "default"}` (virtual; see §7)
 4. **Agent creation** (`create_agent`) —
-   `{"create_agent": {<CreateAgentOptions.to_body() fields>}}`
+   `{"create_agent": {<CreateAgentOptions.to_body() fields>}}`. Skills are
+   seeded in this body as ordinary `memory` blocks with labels
+   `skills/{name}` (body-only value; the server synthesizes the
+   `SKILL.md` frontmatter from the block description). When
+   `personality` is set, the SDK instead issues the native `create_agent`
+   command (§2) on the throwaway session's connection — the server applies
+   its own preset catalog (name, persona, memory files, model defaults).
 5. **Agent-free** (`query`) —
    `{"create_conversation": {"body": {"model": ..., "system": ...}}}`
 
@@ -131,8 +140,13 @@ Top-level delta fields with meaning:
    "kind": "create_message",
    "messages": [{"role": "user", "content": "text or parts",
                  "client_message_id": "sdk-message-<uuid>"}],
-   "exclude_interactive_tools": true}}
+   "exclude_interactive_tools": true,
+   "client_toolset": {"base": "auto", "include": ["..."]}}}
 ```
+
+`client_toolset` is present in **every** `create_message` payload of a
+session configured with `toolset` (request-scoped; the server applies it
+per turn).
 
 Other kinds:
 

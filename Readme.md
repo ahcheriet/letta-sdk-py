@@ -10,15 +10,16 @@ call, and status update in real time.
 
 ## Requirements
 
-## Documentation
-
-- [docs/api-reference.md](docs/api-reference.md) — full API reference
-- [docs/protocol.md](docs/protocol.md) — the app-server wire protocol as the SDK speaks it
-
 - Python **3.11+**
 - A running Letta Code app server (the local harness or a remote one),
   e.g. `letta server --listen ws://0.0.0.0:4500`
 - A capability token (for `--ws-auth capability-token` servers)
+
+## Documentation
+
+- [docs/api-reference.md](docs/api-reference.md) — full API reference
+- [docs/protocol.md](docs/protocol.md) — the app-server wire protocol as the SDK speaks it
+- [examples/](examples/) — 15 runnable examples, one per feature (env-configured, nothing machine-specific)
 
 ## Install
 
@@ -93,6 +94,22 @@ async for message in client.query(
         print(message.content, end="")
 ```
 
+## Examples
+
+Fifteen runnable examples, all env-configured (`LETTA_MODEL` / `LETTA_APP_SERVER_URL`
+/ `LETTA_TOKEN_FILE`) — see [examples/README.md](examples/README.md) for setup,
+a tutorial, and troubleshooting:
+
+| area | examples |
+| --- | --- |
+| core turns | `quickstart.py`, `streaming.py`, `chat.py` (REPL with persistent memory) |
+| memory & state | `resume.py` (cross-process), `history.py` (server-side transcript) |
+| multimodal | `images.py` |
+| tools | `external_tools.py`, `tool_helpers.py` (typed params + `json_result`), `approvals.py` (`can_use_tool`) |
+| options | `skills.py`, `personality.py`, `session_options.py` (`toolset` + `dreaming`) |
+| streams & transcript | `stream_events.py`, `transcript.py` |
+| management | `management.py` (models / agents / conversations) |
+
 ## Management
 
 ```python
@@ -116,6 +133,29 @@ from letta_sdk import image_from_file, image_from_base64
 
 part = image_from_file("chart.png")          # or image_from_base64(data, "image/png")
 await session.send([{"type": "text", "text": "What is in this image?"}, part])
+```
+
+## Skills, personalities, toolsets, dreaming
+
+```python
+# Skills: SKILL.md directories and/or inline AgentSkills, seeded at creation
+agent_id = await client.create_agent(CreateAgentOptions(
+    name="assistant", model=MODEL,
+    skills=["path/to/skill-dir", AgentSkill(name="greet", description="...",
+                                            instructions="...")],
+))
+
+# Personality: server-resolved Letta Code preset (memo | blank | tutorial
+# | linus | kawaii) — the app server applies its own preset catalog
+agent_id = await client.create_agent(CreateAgentOptions(
+    personality="kawaii", model=MODEL,   # model/tags optional overrides
+))
+
+# Per-session toolset + dreaming (reflection) settings
+session = client.create_session(agent_id, CreateSessionOptions(
+    toolset=ToolsetConfig(base="auto"),
+    dreaming=DreamingOptions(trigger="step-count", step_count=5),
+))
 ```
 
 ## Configuration
@@ -149,10 +189,20 @@ await session.send([{"type": "text", "text": "What is in this image?"}, part])
 - **Errors** — `AppServerError` → `AppServerRequestError` (server said
   no), `AppServerTimeoutError`, `AppServerClosedError`,
   `AppServerConnectionError`.
-- **Options** — `CreateAgentOptions`, `CreateSessionOptions`,
-  `QueryOptions`, `ToolSpec`.
-- **Helpers** — `TranscriptAccumulator` (fold a message stream into a
-  text transcript), `text_content()`, image helpers.
+- **Options** — `CreateAgentOptions` (incl. `personality`, `skills`,
+  `dreaming`, `pin_global`), `CreateSessionOptions` (incl. `toolset`,
+  `dreaming`), `QueryOptions`, `ToolSpec`, `ToolsetConfig`,
+  `DreamingOptions`, `AgentSkill`.
+- **Helpers** — image helpers (`image_from_file` / `_base64` /
+  `_url`), `text_content()`; stream-event text extraction
+  (`extract_stream_text_delta`, `StreamTextDelta`); tool helpers
+  (`json_result`, `read_string_param`, `read_number_param`,
+  `read_boolean_param`, `read_string_array_param`); skill helpers
+  (`resolve_skill_items`, `load_skill_directory`, `parse_skill_markdown`,
+  `skill_memory_blocks`, `skills_have_support_files`).
+- **Transcript** — `TranscriptAccumulator` folds a message stream into
+  stable `TranscriptRow`s (text + tool rows, replay-safe, `rebase()` for
+  history pages); `assistant_text` for the legacy plain-text view.
 
 ## Protocol notes
 
