@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any, AsyncIterator
 
 from .types import (
@@ -63,6 +64,7 @@ class LettaSession:
         usage: UsageMessage | None = None
         error: ErrorMessage | None = None
         stop_reason: str | None = None
+        started_at = perf_counter()
 
         try:
             stream = await self._client.conversations.messages.create(
@@ -88,6 +90,7 @@ class LettaSession:
             success=error is None,
             stop_reason=stop_reason,
             conversation_id=None if self.state.is_default_conversation else self.state.conversation_id,
+            duration_ms=(perf_counter() - started_at) * 1000.0,
             usage=usage,
             error=error,
         )

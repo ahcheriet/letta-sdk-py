@@ -7,7 +7,15 @@ from letta_client import AsyncLetta
 from .management import AgentsManager, ConversationsManager, ModelsManager
 from .query import QueryStream
 from .session import LettaSession
-from .types import Backend, CreateAgentOptions, CreateSessionOptions, QueryOptions, SessionState
+from .types import (
+    Backend,
+    CreateAgentOptions,
+    CreateSessionOptions,
+    QueryOptions,
+    ResultMessage,
+    SessionState,
+    SendMessage,
+)
 
 
 class LettaAgentClient:
@@ -79,6 +87,41 @@ class LettaAgentClient:
 
     def query(self, prompt: Any, options: QueryOptions | None = None) -> QueryStream:
         return QueryStream(client=self, prompt=prompt, options=options or QueryOptions())
+
+    async def prompt(
+        self,
+        agent_id: str,
+        message: SendMessage,
+        options: CreateSessionOptions | None = None,
+    ) -> ResultMessage:
+        session = await self.create_session(agent_id, options)
+        try:
+            await session.send(message)
+            async for streamed_message in session.stream():
+                if isinstance(streamed_message, ResultMessage):
+                    return streamed_message
+            raise RuntimeError("Session stream ended without a result message.")
+        finally:
+            await session.close()
+
+    async def create_ephemeral_conversation(self, options: QueryOptions) -> str:
+        if not options.model:
+            raise ValueError("query() requires QueryOptions.model.")
+        if not options.system_prompt:
+            raise ValueError("query() requires QueryOptions.system_prompt.")
+        body: dict[str, Any] = {"model": options.model, "system": options.system_prompt}
+        if options.model_settings is not None:
+            body["model_settings"] = options.model_settings
+        if options.context_window_limit is not None:
+            body["context_window_limit"] = options.context_window_limit
+        response = await self._client.post("/v1/conversations/ephemeral", body=body)
+        if isinstance(response, dict):
+            conversation_id = response.get("id")
+        else:
+            conversation_id = getattr(response, "id", None)
+        if not isinstance(conversation_id, str) or not conversation_id:
+            raise RuntimeError("Ephemeral conversation did not return a valid id.")
+        return conversation_id
 
     def _client_kwargs(
         self,

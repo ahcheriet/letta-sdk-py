@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 from .session import LettaSession
-from .types import CreateAgentOptions, QueryOptions, SDKMessage
+from .types import CreateSessionOptions, QueryOptions, SDKMessage
 
 
 @dataclass(slots=True)
@@ -13,7 +13,6 @@ class QueryStream:
     prompt: Any
     options: QueryOptions
     on_close: Any | None = None
-    _agent_id: str | None = None
     _session: LettaSession | None = None
     _started: bool = False
     _closed: bool = False
@@ -28,8 +27,6 @@ class QueryStream:
         try:
             if self._session is not None:
                 await self._session.close()
-            if self._agent_id is not None:
-                await self.client.agents.delete(self._agent_id)
         finally:
             if self.on_close is not None:
                 await self.on_close()
@@ -39,15 +36,14 @@ class QueryStream:
             raise RuntimeError("Query streams can only be consumed once.")
         self._started = True
         try:
-            self._agent_id = await self.client.create_agent(
-                CreateAgentOptions(
-                    model=self.options.model,
-                    system_prompt=self.options.system_prompt,
-                    hidden=self.options.hidden,
-                    tags=list(self.options.tags),
-                )
+            conversation_id = await self.client.create_ephemeral_conversation(self.options)
+            session_options = CreateSessionOptions(
+                max_steps=self.options.max_steps,
+                stream_tokens=self.options.stream_tokens,
+                include_pings=self.options.include_pings,
+                extra_body=dict(self.options.extra_body),
             )
-            self._session = await self.client.create_session(self._agent_id)
+            self._session = self.client.resume_session(conversation_id, session_options)
             await self._session.send(self.prompt)
             async for message in self._session.stream():
                 yield message

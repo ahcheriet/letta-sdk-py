@@ -98,7 +98,12 @@ class FakeAsyncLetta:
         self.agents = FakeAgentsAPI()
         self.conversations = FakeConversationsAPI(responses or [])
         self.models = FakeModelsAPI()
+        self.post_calls: list[tuple[str, dict[str, object]]] = []
         self.closed = False
+
+    async def post(self, path: str, *, body: dict[str, object]) -> dict[str, str]:
+        self.post_calls.append((path, body))
+        return {"id": "conv-ephemeral"}
 
     async def close(self) -> None:
         self.closed = True
@@ -147,13 +152,15 @@ class LettaSdkTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(messages[0].type, "assistant")
         self.assertEqual(messages[0].content, "Hello")
-        self.assertEqual(messages[-1], ResultMessage(type="result", raw={"stop_reason": "end_turn"}, success=True, stop_reason="end_turn", conversation_id=None, usage=messages[1], error=None))
+        self.assertEqual(messages[-1].type, "result")
+        self.assertTrue(messages[-1].duration_ms is not None and messages[-1].duration_ms >= 0)
         conversation_id, payload = fake.conversations.messages.create_calls[0]
         self.assertEqual(conversation_id, "default")
         self.assertEqual(payload["agent_id"], "agent-123")
         self.assertEqual(payload["override_model"], "model-a")
         self.assertEqual(payload["max_steps"], 7)
         self.assertEqual(payload["input"], [{"type": "text", "text": "Hi"}])
+        self.assertEqual(messages[-1], ResultMessage(type="result", raw={"stop_reason": "end_turn"}, success=True, stop_reason="end_turn", conversation_id=None, duration_ms=messages[-1].duration_ms, usage=messages[1], error=None))
 
     async def test_create_session_creates_conversation_and_lists_history(self) -> None:
         fake = FakeAsyncLetta()
@@ -175,17 +182,54 @@ class LettaSdkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(history["conversation_id"], "conv-created")
         self.assertEqual(fake.conversations.messages.list_calls[0], ("conv-created", {"limit": 20}))
 
-    async def test_query_creates_and_deletes_ephemeral_agent(self) -> None:
+    async def test_query_uses_ephemeral_conversation_endpoint(self) -> None:
         fake = FakeAsyncLetta(
             responses=[SimpleNamespace(message_type="assistant_message", id="m1", content="Done")]
         )
         client = LettaAgentClient(client=fake)
 
-        messages = [message async for message in client.query("Ping", QueryOptions(system_prompt="Be terse."))]
+        messages = [
+            message
+            async for message in client.query(
+                "Ping",
+                QueryOptions(
+                    model="openai/gpt-5.6-luna",
+                    system_prompt="Be terse.",
+                    max_steps=3,
+                ),
+            )
+        ]
 
         self.assertEqual(messages[0].type, "assistant")
-        self.assertIn("ephemeral", fake.agents.create_calls[0]["tags"])
-        self.assertEqual(fake.agents.deleted, ["agent-created"])
+        self.assertEqual(fake.post_calls[0], ("/v1/conversations/ephemeral", {"model": "openai/gpt-5.6-luna", "system": "Be terse."}))
+        self.assertEqual(fake.conversations.messages.create_calls[0][0], "conv-ephemeral")
+        self.assertEqual(fake.conversations.messages.create_calls[0][1]["max_steps"], 3)
+        self.assertEqual(fake.agents.create_calls, [])
+        self.assertEqual(fake.agents.deleted, [])
+
+    async def test_query_requires_model_and_system_prompt(self) -> None:
+        fake = FakeAsyncLetta()
+        client = LettaAgentClient(client=fake)
+
+        with self.assertRaisesRegex(ValueError, "QueryOptions.model"):
+            [message async for message in client.query("Ping", QueryOptions(system_prompt="Be terse."))]
+        with self.assertRaisesRegex(ValueError, "QueryOptions.system_prompt"):
+            [message async for message in client.query("Ping", QueryOptions(model="openai/gpt-5.6-luna"))]
+
+    async def test_prompt_returns_result_message(self) -> None:
+        fake = FakeAsyncLetta(
+            responses=[
+                SimpleNamespace(message_type="assistant_message", id="m1", content="Done"),
+                SimpleNamespace(message_type="stop_reason", stop_reason="end_turn"),
+            ]
+        )
+        client = LettaAgentClient(client=fake)
+
+        result = await client.prompt("agent-abc", "Hello")
+
+        self.assertEqual(result.type, "result")
+        self.assertTrue(result.success)
+        self.assertEqual(result.stop_reason, "end_turn")
 
     async def test_transcript_accumulator_and_session_cleanup(self) -> None:
         fake = FakeAsyncLetta(

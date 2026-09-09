@@ -48,6 +48,7 @@ __all__ = [
     "create_session",
     "image_from_base64",
     "image_from_file",
+    "prompt",
     "query",
     "resume_session",
     "text_content",
@@ -108,3 +109,19 @@ def query(
     if client is None:
         stream.on_close = managed_client.close
     return stream
+
+
+async def prompt(
+    agent_id: str,
+    message: SendMessage,
+    options: CreateSessionOptions | None = None,
+    *,
+    client: LettaAgentClient | None = None,
+    **client_kwargs: object,
+) -> ResultMessage:
+    managed_client = client or LettaAgentClient(**client_kwargs)
+    try:
+        return await managed_client.prompt(agent_id, message, options)
+    finally:
+        if client is None:
+            await managed_client.close()

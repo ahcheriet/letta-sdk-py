@@ -106,8 +106,22 @@ class CreateSessionOptions:
 class QueryOptions:
     model: str | None = None
     system_prompt: str | None = None
-    hidden: bool = True
-    tags: list[str] = field(default_factory=lambda: ["ephemeral"])
+    model_settings: dict[str, Any] | None = None
+    context_window_limit: int | None = None
+    max_steps: int | None = None
+    stream_tokens: bool | None = None
+    include_pings: bool | None = None
+    extra_body: dict[str, Any] = field(default_factory=dict)
+
+    def message_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = dict(self.extra_body)
+        if self.max_steps is not None:
+            payload["max_steps"] = self.max_steps
+        if self.stream_tokens is not None:
+            payload["stream_tokens"] = self.stream_tokens
+        if self.include_pings is not None:
+            payload["include_pings"] = self.include_pings
+        return payload
 
 
 @dataclass(slots=True)
@@ -176,6 +190,7 @@ class ResultMessage(SDKMessage):
     success: bool
     stop_reason: str | None = None
     conversation_id: str | None = None
+    duration_ms: float | None = None
     usage: UsageMessage | None = None
     error: ErrorMessage | None = None
 
