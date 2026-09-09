@@ -51,9 +51,18 @@ server address, token, or model — everything comes from the environment
 | [`external_tools.py`](external_tools.py) | local Python functions as agent tools (`ToolSpec` + `execute`) |
 | [`approvals.py`](approvals.py) | the `can_use_tool` callback — allow/deny server-side tool calls from your code |
 | [`chat.py`](chat.py) | a full chat app with persistent memory (`/memory`, `/reset`, `/exit`) |
+| [`skills.py`](skills.py) | seeding an agent with skills at creation — a `SKILL.md` directory **and** an inline `AgentSkill` |
+| [`personality.py`](personality.py) | creating an agent from a Letta Code personality preset (server-resolved) |
+| [`session_options.py`](session_options.py) | per-session `toolset` + `dreaming` (reflection) settings |
+| [`transcript.py`](transcript.py) | `TranscriptAccumulator` — stable, replay-safe transcript rows from a live turn |
+| [`tool_helpers.py`](tool_helpers.py) | typed tool parameters (`read_*_param`) + `json_result` |
+| [`stream_events.py`](stream_events.py) | raw provider `stream_event` payloads + `extract_stream_text_delta` |
+| [`management.py`](management.py) | the resource managers: `models.list()`, `agents.*`, `conversations.*` |
+| [`history.py`](history.py) | reading the server-side conversation history back (`list_messages`) |
 
 Suggested order: quickstart → streaming → resume → external_tools →
-approvals → images → chat.
+tool_helpers → approvals → images → skills → personality →
+session_options → transcript → stream_events → management → history → chat.
 
 ## Tutorial: your first turn
 
