@@ -53,12 +53,16 @@ TELEGRAM_API = os.environ.get("TELEGRAM_API_URL", "").strip() or "https://api.te
 CHUNK_SIZE = 4000
 
 
-def _tg_call(token: str, method: str, **params: Any) -> Any:
-    """One blocking Bot API call (run via asyncio.to_thread)."""
+def _tg_call(token: str, method: str, timeout: float = 70.0, **params: Any) -> Any:
+    """One blocking Bot API call (run via asyncio.to_thread).
+
+    ``timeout`` defaults to 70s so ``getUpdates`` long-polls (30s server-side)
+    complete comfortably; short-lived calls may pass a smaller value.
+    """
     url = f"{TELEGRAM_API}/bot{token}/{method}"
     data = urllib.parse.urlencode(params).encode("utf-8")
     try:
-        with urllib.request.urlopen(url, data=data, timeout=70) as response:
+        with urllib.request.urlopen(url, data=data, timeout=timeout) as response:
             body = response.read().decode("utf-8")
         payload = json.loads(body)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
@@ -69,9 +73,9 @@ def _tg_call(token: str, method: str, **params: Any) -> Any:
     return payload.get("result")
 
 
-async def tg(token: str, method: str, **params: Any) -> Any:
-    """Async Bot API helper (long-poll safe: 70s HTTP timeout)."""
-    return await asyncio.to_thread(_tg_call, token, method, **params)
+async def tg(token: str, method: str, timeout: float = 70.0, **params: Any) -> Any:
+    """Async Bot API helper (long-poll safe: 70s HTTP timeout by default)."""
+    return await asyncio.to_thread(_tg_call, token, method, timeout, **params)
 
 
 async def send_chunks(
@@ -161,13 +165,19 @@ async def main() -> None:
     allowed = os.environ.get("TELEGRAM_ALLOWED_USER", "").strip()
     reuse_agent = os.environ.get("LETTA_AGENT_ID", "").strip()
 
-    try:
-        me = await tg(token, "getMe")
-    except RuntimeError as exc:
+    me = None
+    for attempt in range(1, 11):
+        try:
+            me = await tg(token, "getMe", timeout=15)
+            break
+        except RuntimeError as exc:
+            print(f"[startup] getMe attempt {attempt}/10 failed: {exc}", file=sys.stderr)
+            await asyncio.sleep(10)
+    if me is None:
         raise SystemExit(
-            f"Could not authenticate the Telegram bot: {exc}\n"
-            "Check TELEGRAM_BOT_TOKEN (from @BotFather)."
-        ) from exc
+            "Could not reach the Telegram Bot API after 10 attempts.\n"
+            "Check network access to api.telegram.org and TELEGRAM_BOT_TOKEN."
+        )
     username = me.get("username") if isinstance(me, dict) else "?"
     print(
         f"Telegram bridge running as @{username} — Ctrl+C to stop.",
@@ -230,6 +240,10 @@ async def main() -> None:
                     chat_id = chat.get("id") if isinstance(chat, dict) else None
                     user_id = sender.get("id") if isinstance(sender, dict) else None
                     text = str(message.get("text") or "").strip()
+                    print(
+                        f"[chat {chat_id} user {user_id}] {text[:80]!r}",
+                        file=sys.stderr,
+                    )
                     if not isinstance(chat_id, int) or not text:
                         continue
                     if allowed and str(user_id) != allowed:
