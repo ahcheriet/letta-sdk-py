@@ -16,10 +16,22 @@ from .app_server import (
     AppServerTimeoutError,
 )
 from .client import LettaAgentClient
-from .images import image_from_base64, image_from_file
+from .images import image_from_base64, image_from_file, image_from_url
 from .query import QueryStream
 from .session import LettaSession
-from .transcript import TranscriptAccumulator
+from .stream_events import StreamTextDelta, extract_stream_text_delta
+from .tool_helpers import (
+    json_result,
+    read_boolean_param,
+    read_number_param,
+    read_string_array_param,
+    read_string_param,
+)
+from .transcript import (
+    TranscriptAccumulator,
+    TranscriptRow,
+    TranscriptToolResult,
+)
 from .types import (
     AssistantMessage,
     Backend,
@@ -74,16 +86,26 @@ __all__ = [
     "SDKMessage",
     "SendMessage",
     "StreamEventMessage",
+    "StreamTextDelta",
     "ToolCallMessage",
     "ToolResult",
     "ToolResultMessage",
     "ToolSpec",
     "TranscriptAccumulator",
+    "TranscriptRow",
+    "TranscriptToolResult",
     "UsageMessage",
     "create_agent",
     "create_session",
+    "extract_stream_text_delta",
     "image_from_base64",
     "image_from_file",
+    "image_from_url",
+    "json_result",
+    "read_boolean_param",
+    "read_number_param",
+    "read_string_array_param",
+    "read_string_param",
     "prompt",
     "query",
     "resume_session",

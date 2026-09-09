@@ -430,6 +430,7 @@ class ToolResult:
 
     content: list[dict[str, Any]]
     is_error: bool = False
+    details: Any = None
 
 
 class ToolSpec:
