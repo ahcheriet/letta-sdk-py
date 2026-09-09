@@ -96,7 +96,7 @@ async for message in client.query(
 
 ## Examples
 
-Sixteen runnable examples, all env-configured (`LETTA_MODEL` / `LETTA_APP_SERVER_URL`
+Seventeen runnable examples, all env-configured (`LETTA_MODEL` / `LETTA_APP_SERVER_URL`
 / `LETTA_TOKEN_FILE`) — see [examples/README.md](examples/README.md) for setup,
 a tutorial, and troubleshooting:
 
@@ -106,6 +106,7 @@ a tutorial, and troubleshooting:
 | memory & state | `resume.py` (cross-process), `history.py` (server-side transcript) |
 | multimodal | `images.py` |
 | tools | `external_tools.py`, `mcp.py` (MCP stdio servers), `tool_helpers.py` (typed params + `json_result`), `approvals.py` (`can_use_tool`) |
+| chat platforms | `telegram_bridge.py` (Telegram ↔ agent, stdlib-only Bot API polling) |
 | options | `skills.py`, `personality.py`, `session_options.py` (`toolset` + `dreaming`) |
 | streams & transcript | `stream_events.py`, `transcript.py` |
 | management | `management.py` (models / agents / conversations) |
