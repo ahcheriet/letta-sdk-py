@@ -1,0 +1,1 @@
+This repo is a python and pythonic version of the https://github.com/letta-ai/letta-agent-sdk Letta agent dsk v2, that is written in typescript. The aim of the project is to create a complet version of the sdk v2.
