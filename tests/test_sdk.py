@@ -15,6 +15,7 @@ import pytest
 
 from letta_sdk import (
     AssistantMessage,
+    CanUseToolDecision,
     CreateAgentOptions,
     CreateSessionOptions,
     ErrorMessage,
@@ -22,6 +23,7 @@ from letta_sdk import (
     LettaSession,
     QueryOptions,
     ResultMessage,
+    ToolCallMessage,
     ToolSpec,
     UsageMessage,
     image_from_base64,
@@ -753,3 +755,139 @@ async def test_session_owns_connection_closes_it():
     await session.ready()
     await session.close()
     assert conn.closed is True
+
+
+# ═══════════════════════════════════════════════════════
+# tool approvals
+# ═══════════════════════════════════════════════════════
+
+
+async def test_approval_auto_allow_keeps_turn_open():
+    """A requires_approval stop must not end the turn: the server auto-
+    approves and the follow-up run completes it."""
+    conn = FakeAppServerConnection()
+    conn.set_response("runtime_start", ready_response())
+    client = make_client(conn)
+    session = client.create_session("agent-1")
+
+    async def drive():
+        await asyncio.sleep(0.02)  # let send() be in flight
+        # the model calls the memory tool; the server asks for approval
+        conn.push(
+            delta(
+                "approval_request_message",
+                tool_call={
+                    "tool_call_id": "chatcmpl-tool-1",
+                    "name": "memory",
+                    "arguments": '{"command": "str_replace"}',
+                },
+                id="letta-msg-1",
+                run_id="run-1",
+            )
+        )
+        conn.push(delta("stop_reason", stop_reason="requires_approval", run_id="run-1"))
+        conn.push(
+            delta(
+                "approval_classification_end",
+                auto_allowed_tool_call_ids=["chatcmpl-tool-1"],
+                auto_denied_tool_call_ids=[],
+            )
+        )
+        # follow-up run after auto-approval
+        conn.push(delta("assistant_message", content="Saved.", id="m-1", run_id="run-2"))
+        conn.push(delta("stop_reason", stop_reason="end_turn", run_id="run-2"))
+        conn.push(
+            delta(
+                "usage_statistics",
+                total_tokens=7,
+                run_ids=["run-1", "run-2"],
+            )
+        )
+
+    driver = asyncio.create_task(drive())
+    await session.send("Remember that I like teal.")
+    seen: list = []
+    async for message in session.stream():
+        seen.append(message)
+        if isinstance(message, ResultMessage):
+            break
+    await driver
+
+    tool_calls = [m for m in seen if isinstance(m, ToolCallMessage)]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].tool_call_id == "chatcmpl-tool-1"
+    assert tool_calls[0].tool_name == "memory"
+    # the turn survived the requires_approval stop and completed on the
+    # follow-up run
+    result = seen[-1]
+    assert isinstance(result, ResultMessage)
+    assert result.success is True
+    assert result.stop_reason == "end_turn"
+    assert result.result == "Saved."
+    await session.close()
+
+
+async def test_control_request_approval_callback():
+    conn = FakeAppServerConnection()
+    conn.set_response("runtime_start", ready_response())
+    client = make_client(conn)
+    seen_decisions: list[tuple[str, dict[str, Any]]] = []
+
+    def can_use_tool(name: str, tool_input: dict[str, Any], context: dict[str, Any]):
+        seen_decisions.append((name, tool_input))
+        return CanUseToolDecision(behavior="allow")
+
+    session = client.create_session(
+        "agent-1", CreateSessionOptions(can_use_tool=can_use_tool)
+    )
+    await session.ready()
+    conn.push(
+        {
+            "type": "control_request",
+            "subtype": "can_use_tool",
+            "request_id": "req-1",
+            "tool_name": "memory",
+            "input": {"command": "str_replace"},
+            "runtime": {"agent_id": "agent-1", "conversation_id": "conv-1"},
+        }
+    )
+    await asyncio.sleep(0.02)
+    approvals = [
+        p
+        for p in conn.sent
+        if p.get("type") == "input" and p.get("payload", {}).get("kind") == "approval_response"
+    ]
+    assert approvals, f"no approval_response sent; sent={conn.sent}"
+    assert approvals[0]["payload"]["request_id"] == "req-1"
+    assert approvals[0]["payload"]["decision"]["behavior"] == "allow"
+    assert seen_decisions == [("memory", {"command": "str_replace"})]
+    await session.close()
+
+
+async def test_control_request_denied_without_callback():
+    conn = FakeAppServerConnection()
+    conn.set_response("runtime_start", ready_response())
+    client = make_client(conn)
+    session = client.create_session("agent-1")
+    await session.ready()
+    conn.push(
+        {
+            "type": "control_request",
+            "subtype": "can_use_tool",
+            "request_id": "req-2",
+            "tool_name": "run_command",
+            "input": {"command": "rm -rf /"},
+            "runtime": {"agent_id": "agent-1", "conversation_id": "conv-1"},
+        }
+    )
+    await asyncio.sleep(0.02)
+    approvals = [
+        p
+        for p in conn.sent
+        if p.get("type") == "input" and p.get("payload", {}).get("kind") == "approval_response"
+    ]
+    assert approvals
+    decision = approvals[0]["payload"]["decision"]
+    assert decision["behavior"] == "deny"
+    assert "No can_use_tool callback" in decision["message"]
+    await session.close()

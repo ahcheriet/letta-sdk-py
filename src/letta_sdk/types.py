@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal, TypedDict, TypeAlias
+from typing import Any, Awaitable, Callable, Literal, TypedDict, TypeAlias
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -319,8 +319,49 @@ class CreateSessionOptions:
     skill_sources: list[str] | None = None
     #: Custom tools executed locally in the SDK process (see ``ToolSpec``).
     tools: list["ToolSpec"] = field(default_factory=list)
+    #: Callback deciding server tool approvals (``control_request`` with
+    #: subtype ``can_use_tool``). When absent, the SDK assumes the server
+    #: auto-handles approvals and keeps the turn open across
+    #: ``requires_approval`` stops.
+    can_use_tool: "CanUseToolCallback | None" = None
     #: Raw overrides merged into the runtime_start command.
     extra_body: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True, kw_only=True)
+class CanUseToolDecision:
+    """Decision returned by a ``can_use_tool`` callback."""
+
+    #: ``"allow"`` or ``"deny"``.
+    behavior: str
+    #: Optional reason / message (required on the wire for ``deny``).
+    message: str | None = None
+    #: Optional replacement tool input (allow only).
+    updated_input: dict[str, Any] | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        if self.behavior == "deny":
+            return {
+                "behavior": "deny",
+                "message": self.message or "Denied by can_use_tool callback",
+            }
+        wire: dict[str, Any] = {
+            "behavior": "allow",
+            "updated_input": self.updated_input,
+            "selected_permission_suggestion_ids": [],
+        }
+        if self.message is not None:
+            wire["message"] = self.message
+        return wire
+
+
+#: Signature of a ``can_use_tool`` callback: (tool_name, tool_input,
+#: context) -> decision (sync or awaitable). ``context`` carries the raw
+#: request fields (request_id, tool_call_id, permission_suggestions, ...).
+CanUseToolCallback: TypeAlias = Callable[
+    [str, dict[str, Any], dict[str, Any]],
+    "CanUseToolDecision | Awaitable[CanUseToolDecision]",
+]
 
 
 @dataclass(slots=True)

@@ -19,7 +19,9 @@ grace expiring, a ``turn_finished`` event, or ``update_loop_status``
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -35,6 +37,7 @@ from .app_server import (
 )
 from .types import (
     AssistantMessage,
+    CanUseToolDecision,
     CreateSessionOptions,
     ErrorMessage,
     ListMessagesOptions,
@@ -61,8 +64,14 @@ try:
 except Exception:  # pragma: no cover
     _SDK_VERSION = "0.0.0"
 
+logger = logging.getLogger("letta_sdk")
+
 #: Trailing grace after stop_reason to let final usage accounting arrive.
 TRAILING_USAGE_GRACE_SECONDS = 0.15
+
+#: Tools auto-approved when no ``can_use_tool`` callback is registered
+#: (mirrors the TypeScript SDK's headless policy).
+HEADLESS_AUTO_ALLOW_TOOLS = {"EnterPlanMode"}
 
 _FAILURE_STOP_REASONS = {
     "error",
@@ -186,6 +195,7 @@ class _Turn:
     usage: UsageMessage | None = None
     error: ErrorMessage | None = None
     observed_evidence: bool = False
+    observed_requires_approval: bool = False
     pending_terminal: bool = False
     terminal_timeout: asyncio.TimerHandle | None = None
 
@@ -643,6 +653,11 @@ class LettaSession:
         if message.get("type") == "external_tool_call_request":
             self._on_external_tool_request(message)
             return
+        if message.get("type") == "control_request":
+            asyncio.get_running_loop().create_task(
+                self._handle_control_request(message)
+            )
+            return
         self._handle_status_message(message)
         if message.get("type") == "turn_finished":
             self._handle_turn_finished(message)
@@ -699,13 +714,82 @@ class LettaSession:
                 error_code=turn.error.error_code if turn.error else None,
             )
         elif status == "WAITING_ON_APPROVAL":
+            turn.observed_requires_approval = True
+            if self._options.can_use_tool is None:
+                # Server-side auto-approval (no callback registered): the
+                # turn continues on a follow-up run — keep it open.
+                return
             self._complete_turn(
                 turn,
                 stop_reason="requires_approval",
-                success=False,
-                detail="requires_approval",
-                error_code="requires_approval",
+                success=True,
+                detail=None,
+                error_code=None,
             )
+
+    async def _handle_control_request(self, message: dict[str, Any]) -> None:
+        """Answer a ``can_use_tool`` control request with an approval decision."""
+        if message.get("subtype") != "can_use_tool":
+            return
+        request_id = message.get("request_id")
+        tool_name = message.get("tool_name")
+        if not isinstance(request_id, str) or not isinstance(tool_name, str):
+            return
+        tool_input = message.get("input")
+        tool_input = tool_input if isinstance(tool_input, dict) else {}
+        runtime = message.get("runtime")
+        runtime = runtime if isinstance(runtime, dict) else self._runtime
+        if not isinstance(runtime, dict):
+            return
+        context: dict[str, Any] = {"request_id": request_id}
+        for key in ("tool_call_id", "permission_suggestions", "blocked_path", "diffs"):
+            if key in message:
+                context[key] = message[key]
+        decision = await self._resolve_tool_approval(tool_name, tool_input, context)
+        try:
+            await self._connection.send(
+                {
+                    "type": "input",
+                    "runtime": runtime,
+                    "payload": {
+                        "kind": "approval_response",
+                        "request_id": request_id,
+                        "decision": decision,
+                    },
+                }
+            )
+        except Exception as exc:  # pragma: no cover - transport failure
+            logger.warning("failed to send approval response: %s", exc)
+
+    async def _resolve_tool_approval(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        callback = self._options.can_use_tool
+        if callback is not None:
+            try:
+                result = callback(tool_name, tool_input, context)
+                if inspect.isawaitable(result):
+                    result = await result
+            except Exception as exc:
+                return {"behavior": "deny", "message": f"can_use_tool callback failed: {exc}"}
+            if isinstance(result, CanUseToolDecision):
+                return result.to_wire()
+            if isinstance(result, dict):
+                return result
+            return {
+                "behavior": "deny",
+                "message": f"can_use_tool callback returned {type(result).__name__}",
+            }
+        if tool_name in HEADLESS_AUTO_ALLOW_TOOLS:
+            return {
+                "behavior": "allow",
+                "updated_input": None,
+                "selected_permission_suggestion_ids": [],
+            }
+        return {"behavior": "deny", "message": "No can_use_tool callback registered"}
 
     def _handle_turn_finished(self, message: dict[str, Any]) -> None:
         run_id = message.get("run_id") or message.get("runId")
@@ -718,6 +802,20 @@ class LettaSession:
         if turn.run_ids and run_id not in turn.run_ids:
             return
         turn.run_ids.add(run_id)
+        if stop_reason == "requires_approval":
+            turn.observed_requires_approval = True
+            if self._options.can_use_tool is None:
+                # Server-side auto-approval: wait for the follow-up run's
+                # terminal stop.
+                return
+            self._complete_turn(
+                turn,
+                stop_reason="requires_approval",
+                success=True,
+                detail=None,
+                error_code=None,
+            )
+            return
         success = (
             stop_reason not in _FAILURE_STOP_REASONS
             if isinstance(stop_reason, str)
@@ -769,9 +867,14 @@ class LettaSession:
             return
         if message_type == "stop_reason":
             stop_reason = delta.get("stop_reason") or delta.get("reason")
-            turn.stop_reason = (
-                stop_reason if isinstance(stop_reason, str) else "end_turn"
-            )
+            reason = stop_reason if isinstance(stop_reason, str) else "end_turn"
+            turn.stop_reason = reason
+            if reason == "requires_approval":
+                # The approval is resolved server-side (or by the registered
+                # can_use_tool callback); the turn continues on a follow-up
+                # run, so keep it open instead of arming a terminal.
+                turn.observed_requires_approval = True
+                return
             turn.pending_terminal = True
             if turn.terminal_timeout is None:
                 asyncio.get_running_loop().call_later(
@@ -969,16 +1072,11 @@ class LettaSession:
             function = function if isinstance(function, dict) else {}
             tool_call_id = delta.get("tool_call_id")
             if not isinstance(tool_call_id, str):
+                tool_call_id = tool_call.get("tool_call_id")
+            if not isinstance(tool_call_id, str):
                 tool_call_id = tool_call.get("id")
             if not isinstance(tool_call_id, str) or not tool_call_id:
-                return ErrorMessage(
-                    type="error",
-                    raw=raw,
-                    message=f"Missing tool_call_id in {message_type}",
-                    error_code="protocol_error",
-                    stop_reason="protocol_error",
-                    run_id=run_id,
-                )
+                tool_call_id = ""  # id is metadata; never fail the turn
             tool_name = tool_call.get("name")
             if not isinstance(tool_name, str):
                 tool_name = function.get("name")

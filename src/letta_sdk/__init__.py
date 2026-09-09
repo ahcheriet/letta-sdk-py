@@ -23,6 +23,7 @@ from .transcript import TranscriptAccumulator
 from .types import (
     AssistantMessage,
     Backend,
+    CanUseToolDecision,
     CreateAgentOptions,
     CreateSessionOptions,
     DEFAULT_APP_SERVER_URL,
@@ -54,6 +55,7 @@ __all__ = [
     "AppServerTimeoutError",
     "AssistantMessage",
     "Backend",
+    "CanUseToolDecision",
     "CreateAgentOptions",
     "CreateSessionOptions",
     "DEFAULT_APP_SERVER_URL",
