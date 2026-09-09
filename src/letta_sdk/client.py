@@ -217,7 +217,7 @@ class LettaAgentClient:
     ) -> LettaSession:
         """Open a session resuming an agent (and its default conversation)
         or a conversation (``conv-...`` id)."""
-        if identifier.startswith(("conv-", "conversation-")):
+        if identifier.startswith(("conv-", "conversation-", "local-conv-")):
             return self._new_session(conversation_id=identifier, options=options)
         return self._new_session(
             agent_id=identifier, default_conversation=True, options=options

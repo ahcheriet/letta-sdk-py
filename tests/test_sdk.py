@@ -346,6 +346,30 @@ async def test_resume_conversation_resolves_agent():
     await session.close()
 
 
+async def test_resume_local_conv_prefix_resolves_agent():
+    # local-backend conversation ids use the "local-conv-" prefix (not
+    # "conv-"); resume_session must route them as conversations, not agents.
+    conn = FakeAppServerConnection()
+    conn.set_response(
+        "conversation_retrieve",
+        {
+            "success": True,
+            "conversation": {"id": "local-conv-152", "agent_id": "agent-resume"},
+        },
+    )
+    conn.set_response("runtime_start", ready_response("agent-resume", "local-conv-152"))
+    client = make_client(conn)
+    session = client.resume_session("local-conv-152")
+    init = await session.ready()
+    assert init.agent_id == "agent-resume"
+    assert init.conversation_id == "local-conv-152"
+    command, body = conn.request_log[-1]
+    assert command == "runtime_start"
+    assert body["agent_id"] == "agent-resume"  # not the conversation id
+    assert body["conversation_id"] == "local-conv-152"
+    await session.close()
+
+
 async def test_resume_agent_uses_default_conversation():
     conn = FakeAppServerConnection()
     conn.set_response("runtime_start", ready_response("agent-1", "conv-1"))
