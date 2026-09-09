@@ -204,6 +204,20 @@ of kind `approval_response`:
 4. `EnterPlanMode` → `allow` (headless default);
 5. otherwise → `deny`.
 
+### 6.3 MCP servers (stdio bridge)
+
+`mcp_servers` servers are started **in the SDK process** before
+`runtime_start` (JSON-RPC 2.0 over the subprocess's stdin/stdout,
+newline-delimited: `initialize` → `notifications/initialized` →
+`tools/list`). Each MCP tool is bridged as an external tool named
+`mcp__<server>__<tool>` and rides the exact §6.1 protocol: registered in
+`runtime_start`'s `external_tools`, executed by the SDK on
+`external_tool_call_request`, answered with the tool-result `input` payload
+(MCP content blocks are mapped: `text` → text part, `image` → image part,
+anything else → JSON text). Server requests such as `ping` are answered;
+notifications are ignored. The bridge is torn down (process terminated)
+when the session closes or initialization fails.
+
 ## 7. Conversations, the `default` virtual conversation
 
 - `create_session` always makes a **real** conversation

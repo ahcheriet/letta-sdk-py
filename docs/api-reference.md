@@ -200,6 +200,7 @@ All methods are `async` and return plain dicts as the server sends them.
 | `stateless` | `bool \| None` | run without loading/changing the agent's MemFS |
 | `skill_sources` | `list[str] \| None` | restrict skill sources (`[]` disables all) |
 | `tools` | `list[ToolSpec]` | local external tools (executed in this process) |
+| `mcp_servers` | `dict[str, dict] \| None` | MCP servers keyed by name (stdio config: `{"command", "args"?, "env"?, "cwd"?}`); started as subprocesses and their tools bridged in as `mcp__<server>__<tool>` external tools (see MCP servers below). A broken server is logged and skipped, never fatal. `http`/`sse` configs are accepted but reported as unavailable — stdio only |
 | `toolset` | `ToolsetConfig \| dict \| None` | request-scoped client toolset — sent as `client_toolset` in **every** turn's `create_message` payload. `base` ∈ `auto, codex, codex_snake, default, gemini, gemini_snake, none`; `include` adds bundled tools (deduped) |
 | `dreaming` | `DreamingOptions \| dict \| None` | reflection ("dreaming") settings — after `runtime_start` the SDK sends `set_reflection_settings {runtime, settings: {trigger, step_count}, scope: "both"}` (defaults: `trigger="step-count"`, `step_count=5`); skipped for `stateless=True` sessions. `behavior` is rejected (app-server limitation, TS parity) |
 | `can_use_tool` | `CanUseToolCallback \| None` | approval callback for server-side tool calls (see below) |
@@ -358,6 +359,30 @@ Port of the TypeScript SDK's tool helper module.
 | `read_number_param` | `(args, name, *, required=True, default=None, integer=False, label=None) -> int \| float \| None` | numeric coercion; `integer=True` additionally validates integrality. Stricter than TS `parseFloat` by design (rejects `"12abc"`) |
 | `read_boolean_param` | `(args, name, *, required=True, default=None, label=None) -> bool \| None` | accepts bools, `"true"/"false"` (case-insensitive), `1/0` |
 | `read_string_array_param` | `(args, name, *, required=True, default=None, label=None) -> list[str] \| None` | accepts a list of strings or a comma/whitespace-separated string |
+
+### MCP servers (Model Context Protocol)
+
+Port of the TypeScript SDK's `mcp.ts` / `mcp-runtime.ts`. The **stdio**
+transport is implemented with the standard library (JSON-RPC 2.0 over the
+subprocess's stdin/stdout, newline-delimited); `http`/`sse` server configs
+are accepted for type parity but reported as unavailable at connect time.
+
+| helper | signature | notes |
+| --- | --- | --- |
+| `connect_mcp_servers` | `(servers, *, cwd=None, reserved_tool_names=None, log=None) -> McpToolBridge` | connect in parallel; per-server failures are logged and skipped (TS parity). Tools are named `mcp__<server>__<tool>` (sanitized, collision-suffixed `_2`, `_3`, …) |
+| `McpToolBridge` | `tools: list[ToolSpec]`, `close() -> Awaitable[None]` | the connected servers' tools; `close()` terminates every server process (idempotent) — the session does this for you on `close()` and on initialization failure |
+| `expand_mcp_tool_wildcards` | `(allowed_tools: list[str] \| None, mcp_tools: Iterable[str]) -> list[str] \| None` | expand Claude-style `mcp__<server>*` wildcards into exact tool names (deduped); unmatched wildcards are dropped; `None` → `None` (TS parity) |
+
+Direct use (without the `mcp_servers` session option):
+
+```python
+bridge = await connect_mcp_servers(
+    {"calc": {"command": "python", "args": ["my_mcp_server.py"]}}
+)
+for tool in bridge.tools:            # ToolSpec objects, usable in `tools=[...]`
+    ...
+await bridge.close()
+```
 
 ### Skill helpers (`letta_sdk.skills`)
 

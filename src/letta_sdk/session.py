@@ -35,6 +35,7 @@ from .app_server import (
     AppServerRequestError,
     AppServerTimeoutError,
 )
+from .mcp import McpToolBridge, connect_mcp_servers
 from .types import (
     AssistantMessage,
     CanUseToolDecision,
@@ -264,6 +265,7 @@ class LettaSession:
         self._client_tools = {
             t.name: t for t in (self._options.tools or [])
         }
+        self._mcp_bridge: McpToolBridge | None = None
         self._toolset: ToolsetConfig | None = normalize_toolset(
             self._options.toolset
         )
@@ -351,6 +353,7 @@ class LettaSession:
         self._turn_queue.clear()
         if self._owns_connection:
             await self._connection.close()
+        await self._close_mcp_bridge()
         if self._owns_owner and self._owner is not None:
             owner = self._owner
             self._owner = None
@@ -572,7 +575,43 @@ class LettaSession:
             "create_agent/create_conversation body."
         )
 
+    # ── MCP bridge ─────────────────────────────────────────────
+
+    async def _connect_mcp_bridge(self) -> None:
+        servers = self._options.mcp_servers
+        if not servers:
+            return
+        if self._mcp_bridge is not None:
+            await self._close_mcp_bridge()
+        bridge = await connect_mcp_servers(
+            servers,
+            cwd=self._options.cwd,
+            reserved_tool_names=set(self._client_tools),
+            log=lambda message: logger.warning(message),
+        )
+        for tool in bridge.tools:
+            self._client_tools[tool.name] = tool
+        self._mcp_bridge = bridge
+
+    async def _close_mcp_bridge(self) -> None:
+        bridge = self._mcp_bridge
+        if bridge is None:
+            return
+        self._mcp_bridge = None
+        try:
+            await bridge.close()
+        except Exception:  # pragma: no cover - best effort
+            pass
+
     async def _perform_initialize(self) -> SDKInitMessage:
+        await self._connect_mcp_bridge()
+        try:
+            return await self._perform_initialize_inner()
+        except BaseException:
+            await self._close_mcp_bridge()
+            raise
+
+    async def _perform_initialize_inner(self) -> SDKInitMessage:
         body = self._build_runtime_start_body()
         if (
             self._create_agent_body is None
@@ -642,9 +681,14 @@ class LettaSession:
             conversation_model = conversation.get("model")
             if isinstance(conversation_model, str):
                 self._model = conversation_model
-        tools = _agent_tool_names(agent)
-        if tools is not None:
-            self._tools = tools
+        agent_tools = _agent_tool_names(agent)
+        mcp_tool_names = (
+            [t.name for t in self._mcp_bridge.tools]
+            if self._mcp_bridge is not None
+            else []
+        )
+        if agent_tools is not None or mcp_tool_names:
+            self._tools = list(agent_tools or []) + mcp_tool_names
 
         self._remove_message_handler = self._connection.on_message(
             self._on_protocol_message

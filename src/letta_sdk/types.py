@@ -475,6 +475,11 @@ class CreateSessionOptions:
     skill_sources: list[str] | None = None
     #: Custom tools executed locally in the SDK process (see ``ToolSpec``).
     tools: list["ToolSpec"] = field(default_factory=list)
+    #: MCP servers keyed by name (stdio configs: ``{"command", "args"?,
+    #: "env"?, "cwd"?}``); their tools are exposed as
+    #: ``mcp__<server>__<tool>`` external tools. ``http``/``sse`` transports
+    #: are accepted but reported as unavailable (stdio only).
+    mcp_servers: "dict[str, dict[str, Any]] | None" = None
     #: Request-scoped client toolset (``ToolsetConfig`` or dict); sent as
     #: ``client_toolset`` on every turn.
     toolset: "ToolsetConfig | dict[str, Any] | None" = None

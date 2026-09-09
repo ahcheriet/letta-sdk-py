@@ -49,6 +49,7 @@ server address, token, or model — everything comes from the environment
 | [`resume.py`](resume.py) | persisting agent + conversation ids so state survives across process runs (run it twice) |
 | [`images.py`](images.py) | multimodal input: `send([text, image_from_file(...)])` |
 | [`external_tools.py`](external_tools.py) | local Python functions as agent tools (`ToolSpec` + `execute`) |
+| [`mcp.py`](mcp.py) | MCP servers (`mcp_servers` option): a bundled stdlib MCP stdio server exposing `echo` + `add` as `mcp__calc__*` tools |
 | [`approvals.py`](approvals.py) | the `can_use_tool` callback — allow/deny server-side tool calls from your code |
 | [`chat.py`](chat.py) | a full chat app with persistent memory (`/memory`, `/reset`, `/exit`) |
 | [`skills.py`](skills.py) | seeding an agent with skills at creation — a `SKILL.md` directory **and** an inline `AgentSkill` |
@@ -61,7 +62,7 @@ server address, token, or model — everything comes from the environment
 | [`history.py`](history.py) | reading the server-side conversation history back (`list_messages`) |
 
 Suggested order: quickstart → streaming → resume → external_tools →
-tool_helpers → approvals → images → skills → personality →
+mcp → tool_helpers → approvals → images → skills → personality →
 session_options → transcript → stream_events → management → history → chat.
 
 ## Tutorial: your first turn

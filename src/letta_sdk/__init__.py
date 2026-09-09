@@ -17,6 +17,7 @@ from .app_server import (
 )
 from .client import LettaAgentClient
 from .images import image_from_base64, image_from_file, image_from_url
+from .mcp import McpToolBridge, connect_mcp_servers, expand_mcp_tool_wildcards
 from .query import QueryStream
 from .session import LettaSession
 from .skills import (
@@ -92,6 +93,7 @@ __all__ = [
     "ErrorMessage",
     "LettaAgentClient",
     "LettaSession",
+    "McpToolBridge",
     "LoopStatusMessage",
     "MessageContentPart",
     "PingMessage",
@@ -114,8 +116,10 @@ __all__ = [
     "TranscriptRow",
     "TranscriptToolResult",
     "UsageMessage",
+    "connect_mcp_servers",
     "create_agent",
     "create_session",
+    "expand_mcp_tool_wildcards",
     "extract_stream_text_delta",
     "image_from_base64",
     "image_from_file",

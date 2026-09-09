@@ -96,7 +96,7 @@ async for message in client.query(
 
 ## Examples
 
-Fifteen runnable examples, all env-configured (`LETTA_MODEL` / `LETTA_APP_SERVER_URL`
+Sixteen runnable examples, all env-configured (`LETTA_MODEL` / `LETTA_APP_SERVER_URL`
 / `LETTA_TOKEN_FILE`) — see [examples/README.md](examples/README.md) for setup,
 a tutorial, and troubleshooting:
 
@@ -105,7 +105,7 @@ a tutorial, and troubleshooting:
 | core turns | `quickstart.py`, `streaming.py`, `chat.py` (REPL with persistent memory) |
 | memory & state | `resume.py` (cross-process), `history.py` (server-side transcript) |
 | multimodal | `images.py` |
-| tools | `external_tools.py`, `tool_helpers.py` (typed params + `json_result`), `approvals.py` (`can_use_tool`) |
+| tools | `external_tools.py`, `mcp.py` (MCP stdio servers), `tool_helpers.py` (typed params + `json_result`), `approvals.py` (`can_use_tool`) |
 | options | `skills.py`, `personality.py`, `session_options.py` (`toolset` + `dreaming`) |
 | streams & transcript | `stream_events.py`, `transcript.py` |
 | management | `management.py` (models / agents / conversations) |
@@ -191,7 +191,7 @@ session = client.create_session(agent_id, CreateSessionOptions(
   `AppServerConnectionError`.
 - **Options** — `CreateAgentOptions` (incl. `personality`, `skills`,
   `dreaming`, `pin_global`), `CreateSessionOptions` (incl. `toolset`,
-  `dreaming`), `QueryOptions`, `ToolSpec`, `ToolsetConfig`,
+  `dreaming`, `mcp_servers`), `QueryOptions`, `ToolSpec`, `ToolsetConfig`,
   `DreamingOptions`, `AgentSkill`.
 - **Helpers** — image helpers (`image_from_file` / `_base64` /
   `_url`), `text_content()`; stream-event text extraction
@@ -199,7 +199,8 @@ session = client.create_session(agent_id, CreateSessionOptions(
   (`json_result`, `read_string_param`, `read_number_param`,
   `read_boolean_param`, `read_string_array_param`); skill helpers
   (`resolve_skill_items`, `load_skill_directory`, `parse_skill_markdown`,
-  `skill_memory_blocks`, `skills_have_support_files`).
+  `skill_memory_blocks`, `skills_have_support_files`); MCP bridge
+  (`connect_mcp_servers`, `McpToolBridge`, `expand_mcp_tool_wildcards`).
 - **Transcript** — `TranscriptAccumulator` folds a message stream into
   stable `TranscriptRow`s (text + tool rows, replay-safe, `rebase()` for
   history pages); `assistant_text` for the legacy plain-text view.
