@@ -182,6 +182,10 @@ All methods are `async` and return plain dicts as the server sends them.
 | `memfs` | `bool \| None` | `memfs` |
 | `base_tools` | `list[str] \| None` | `base_tools` |
 | `tags` | `list[str]` | `tags` |
+| `personality` | `str \| None` | `create_agent.personality` — preset id: `memo`, `blank`, `tutorial`, `linus`, `kawaii`. Uses the app server's native `create_agent` command so the **server** resolves the preset catalog; cannot be combined with `memory_blocks`/`persona`/`human`/`system_prompt` (pass `model`/`tags` to customize) |
+| `skills` | `list[str \| AgentSkill \| dict] \| None` | skill directory paths (must contain `SKILL.md`) or inline skills; seeded as `skills/{name}` memory blocks — the agent sees them as `skills/{name}/SKILL.md` in its memory. Requires memfs (the default); skills with support files (`scripts/`, …) are rejected on this backend (TS parity) |
+| `dreaming` | `DreamingOptions \| dict \| None` | reflection settings, applied after the runtime starts (see below) |
+| `pin_global` | `bool \| None` | pin the new agent globally (default: pinned unless `hidden`) |
 | `extra_body` | `dict` | merged verbatim into the `create_agent` body |
 
 `to_body()` produces the wire dict.
@@ -196,8 +200,27 @@ All methods are `async` and return plain dicts as the server sends them.
 | `stateless` | `bool \| None` | run without loading/changing the agent's MemFS |
 | `skill_sources` | `list[str] \| None` | restrict skill sources (`[]` disables all) |
 | `tools` | `list[ToolSpec]` | local external tools (executed in this process) |
+| `toolset` | `ToolsetConfig \| dict \| None` | request-scoped client toolset — sent as `client_toolset` in **every** turn's `create_message` payload. `base` ∈ `auto, codex, codex_snake, default, gemini, gemini_snake, none`; `include` adds bundled tools (deduped) |
+| `dreaming` | `DreamingOptions \| dict \| None` | reflection ("dreaming") settings — after `runtime_start` the SDK sends `set_reflection_settings {runtime, settings: {trigger, step_count}, scope: "both"}` (defaults: `trigger="step-count"`, `step_count=5`); skipped for `stateless=True` sessions. `behavior` is rejected (app-server limitation, TS parity) |
 | `can_use_tool` | `CanUseToolCallback \| None` | approval callback for server-side tool calls (see below) |
 | `extra_body` | `dict` | raw overrides merged into `runtime_start` |
+
+### `ToolsetConfig` / `DreamingOptions` / `AgentSkill`
+
+```python
+ToolsetConfig(base="codex", include=["my_tool"])   # or plain dicts
+DreamingOptions(trigger="step-count", step_count=10)  # or plain dicts
+# trigger: off | step-count | compaction-event
+# behavior: reminder | auto-launch  (rejected — not supported by app server)
+
+AgentSkill(name="greet", description="Greet users warmly",
+           instructions="Always start with a warm greeting.")
+# or a directory path containing SKILL.md (frontmatter: name, description)
+```
+
+`letta_sdk.skills` also exposes `resolve_skill_items()`,
+`load_skill_directory()`, `parse_skill_markdown()`, `skill_memory_blocks()`,
+and `skills_have_support_files()` for direct use.
 
 ### `QueryOptions`
 

@@ -19,6 +19,14 @@ from .client import LettaAgentClient
 from .images import image_from_base64, image_from_file, image_from_url
 from .query import QueryStream
 from .session import LettaSession
+from .skills import (
+    AgentSkill,
+    load_skill_directory,
+    parse_skill_markdown,
+    resolve_skill_items,
+    skill_memory_blocks,
+    skills_have_support_files,
+)
 from .stream_events import StreamTextDelta, extract_stream_text_delta
 from .tool_helpers import (
     json_result,
@@ -36,9 +44,13 @@ from .types import (
     AssistantMessage,
     Backend,
     CanUseToolDecision,
+    CLIENT_TOOLSET_BASES,
     CreateAgentOptions,
     CreateSessionOptions,
     DEFAULT_APP_SERVER_URL,
+    DREAMING_BEHAVIORS,
+    DREAMING_TRIGGERS,
+    DreamingOptions,
     ErrorMessage,
     LoopStatusMessage,
     MessageContentPart,
@@ -54,12 +66,14 @@ from .types import (
     ToolCallMessage,
     ToolResult,
     ToolResultMessage,
+    ToolsetConfig,
     ToolSpec,
     UsageMessage,
     text_content,
 )
 
 __all__ = [
+    "AgentSkill",
     "AppServerClosedError",
     "AppServerConnection",
     "AppServerError",
@@ -68,9 +82,13 @@ __all__ = [
     "AssistantMessage",
     "Backend",
     "CanUseToolDecision",
+    "CLIENT_TOOLSET_BASES",
     "CreateAgentOptions",
     "CreateSessionOptions",
     "DEFAULT_APP_SERVER_URL",
+    "DREAMING_BEHAVIORS",
+    "DREAMING_TRIGGERS",
+    "DreamingOptions",
     "ErrorMessage",
     "LettaAgentClient",
     "LettaSession",
@@ -90,6 +108,7 @@ __all__ = [
     "ToolCallMessage",
     "ToolResult",
     "ToolResultMessage",
+    "ToolsetConfig",
     "ToolSpec",
     "TranscriptAccumulator",
     "TranscriptRow",
@@ -102,10 +121,15 @@ __all__ = [
     "image_from_file",
     "image_from_url",
     "json_result",
+    "load_skill_directory",
+    "parse_skill_markdown",
     "read_boolean_param",
     "read_number_param",
     "read_string_array_param",
     "read_string_param",
+    "resolve_skill_items",
+    "skill_memory_blocks",
+    "skills_have_support_files",
     "prompt",
     "query",
     "resume_session",

@@ -20,7 +20,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Literal, TypedDict, TypeAlias
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, TypedDict, TypeAlias
+
+if TYPE_CHECKING:  # pragma: no cover - annotation only
+    from .skills import AgentSkill
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -247,6 +250,145 @@ SDKMessageUnion = (
 # OPTIONS
 # ═══════════════════════════════════════════════════════════════
 
+#: Valid ``toolset.base`` values (TS ``ClientToolsetBase``).
+CLIENT_TOOLSET_BASES: frozenset[str] = frozenset(
+    {"auto", "codex", "codex_snake", "default", "gemini", "gemini_snake", "none"}
+)
+
+#: Valid ``dreaming.trigger`` values (TS ``DreamingTrigger``).
+DREAMING_TRIGGERS: frozenset[str] = frozenset(
+    {"off", "step-count", "compaction-event"}
+)
+
+#: Valid ``dreaming.behavior`` values (TS ``DreamingBehavior``).
+DREAMING_BEHAVIORS: frozenset[str] = frozenset({"reminder", "auto-launch"})
+
+
+@dataclass(slots=True)
+class ToolsetConfig:
+    """Request-scoped client toolset (TS ``ClientToolsetConfig``).
+
+    Sent as ``client_toolset`` in every ``create_message`` payload. Omitted
+    fields preserve the harness preference.
+    """
+
+    #: ``auto``, ``codex``, ``codex_snake``, ``default``, ``gemini``,
+    #: ``gemini_snake``, or ``none``.
+    base: str | None = None
+    #: Additional bundled client tools to load before applying allowedTools.
+    include: list[str] | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        wire: dict[str, Any] = {}
+        if self.base is not None:
+            wire["base"] = self.base
+        if self.include is not None:
+            wire["include"] = list(dict.fromkeys(self.include))
+        return wire
+
+
+@dataclass(slots=True)
+class DreamingOptions:
+    """Reflection ("dreaming") settings.
+
+    The wire settings always carry both keys: ``trigger`` (default
+    ``"step-count"``) and ``step_count`` (default ``5``).
+    """
+
+    #: ``off``, ``step-count``, or ``compaction-event``.
+    trigger: str | None = None
+    #: ``reminder`` or ``auto-launch``. Not supported by the app server and
+    #: rejected by the normalizers (TS parity).
+    behavior: str | None = None
+    #: Positive integer.
+    step_count: int | None = None
+
+    def to_settings(self) -> dict[str, Any]:
+        return {
+            "trigger": self.trigger if self.trigger is not None else "step-count",
+            "step_count": self.step_count if self.step_count is not None else 5,
+        }
+
+
+def _dreaming_from_dict(value: dict[str, Any]) -> DreamingOptions:
+    unknown = set(value) - {"trigger", "behavior", "step_count"}
+    if unknown:
+        raise ValueError(
+            f"Unknown dreaming option(s): {', '.join(sorted(unknown))}"
+        )
+    return DreamingOptions(
+        trigger=value.get("trigger"),
+        behavior=value.get("behavior"),
+        step_count=value.get("step_count"),
+    )
+
+
+def normalize_dreaming(
+    value: DreamingOptions | dict[str, Any] | None,
+    *,
+    allow_behavior: bool,
+) -> DreamingOptions | None:
+    """Validate/normalize dreaming options (port of TS
+    ``validateDreamingOptions`` + the behavior-rejection rules)."""
+    if value is None:
+        return None
+    options = _dreaming_from_dict(value) if isinstance(value, dict) else value
+    if options.behavior is not None and not allow_behavior:
+        raise ValueError(
+            "dreaming.behavior is not supported when opening an existing "
+            "agent session."
+        )
+    if (
+        options.trigger is not None
+        and options.trigger not in DREAMING_TRIGGERS
+    ):
+        raise ValueError(
+            f"Invalid dreaming.trigger '{options.trigger}'. "
+            "Valid values: off, step-count, compaction-event"
+        )
+    if options.behavior is not None and options.behavior not in DREAMING_BEHAVIORS:
+        raise ValueError(
+            f"Invalid dreaming.behavior '{options.behavior}'. "
+            "Valid values: reminder, auto-launch"
+        )
+    if options.step_count is not None and (
+        isinstance(options.step_count, bool)
+        or not isinstance(options.step_count, int)
+        or options.step_count <= 0
+    ):
+        raise ValueError("Invalid dreaming.step_count. Expected a positive integer.")
+    return options
+
+
+def normalize_toolset(
+    value: ToolsetConfig | dict[str, Any] | None,
+) -> ToolsetConfig | None:
+    """Validate/normalize a toolset option (port of TS validation)."""
+    if value is None:
+        return None
+    config = (
+        _toolset_from_dict(value)
+        if isinstance(value, dict)
+        else value
+    )
+    if config.base is not None and config.base not in CLIENT_TOOLSET_BASES:
+        raise ValueError(
+            f"Invalid toolset.base '{config.base}'. Valid values: auto, "
+            "codex, codex_snake, default, gemini, gemini_snake, none"
+        )
+    if config.include is not None and not all(
+        isinstance(name, str) and name for name in config.include
+    ):
+        raise ValueError("toolset.include must be a list of non-empty strings.")
+    return config
+
+
+def _toolset_from_dict(value: dict[str, Any]) -> ToolsetConfig:
+    unknown = set(value) - {"base", "include"}
+    if unknown:
+        raise ValueError(f"Unknown toolset option(s): {', '.join(sorted(unknown))}")
+    return ToolsetConfig(base=value.get("base"), include=value.get("include"))
+
 
 @dataclass(slots=True)
 class CreateAgentOptions:
@@ -272,6 +414,20 @@ class CreateAgentOptions:
     #: Server-side tools to attach at creation (``[]`` for none).
     base_tools: list[str] | None = None
     tags: list[str] = field(default_factory=list)
+    #: Letta Code personality preset (``memo``, ``blank``, ``tutorial``,
+    #: ``linus``, ``kawaii``). Resolved server-side via the app server's
+    #: native ``create_agent`` command; cannot be combined with custom
+    #: memory blocks, persona, human, or system_prompt.
+    personality: str | None = None
+    #: Skill seeding: skill directory paths (must contain ``SKILL.md``) or
+    #: inline ``AgentSkill``/dict items. Seeded as ``skills/{name}`` memory
+    #: blocks; requires memfs (the default).
+    skills: "list[str | AgentSkill | dict[str, Any]] | None" = None
+    #: Reflection ("dreaming") settings applied after the runtime starts.
+    #: ``behavior`` is not supported by the app server and is rejected.
+    dreaming: "DreamingOptions | dict[str, Any] | None" = None
+    #: Pin the new agent globally (default: pinned unless ``hidden``).
+    pin_global: bool | None = None
     #: Raw overrides merged into the ``create_agent`` body.
     extra_body: dict[str, Any] = field(default_factory=dict)
 
@@ -319,6 +475,13 @@ class CreateSessionOptions:
     skill_sources: list[str] | None = None
     #: Custom tools executed locally in the SDK process (see ``ToolSpec``).
     tools: list["ToolSpec"] = field(default_factory=list)
+    #: Request-scoped client toolset (``ToolsetConfig`` or dict); sent as
+    #: ``client_toolset`` on every turn.
+    toolset: "ToolsetConfig | dict[str, Any] | None" = None
+    #: Reflection ("dreaming") settings applied after the runtime starts
+    #: (``set_reflection_settings``). ``behavior`` is not supported when
+    #: opening an existing agent session and is rejected.
+    dreaming: "DreamingOptions | dict[str, Any] | None" = None
     #: Callback deciding server tool approvals (``control_request`` with
     #: subtype ``can_use_tool``). When absent, the SDK assumes the server
     #: auto-handles approvals and keeps the turn open across

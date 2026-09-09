@@ -573,3 +573,452 @@ def test_read_string_array_param_required_raises() -> None:
         with pytest.raises(ValueError, match="^a required$"):
             read_string_array_param(params, "a", required=True)
     assert read_string_array_param({"a": ["z"]}, "a", required=True) == ["z"]
+
+
+# ═══════════════════════════════════════════════════════════════
+# options: toolset / dreaming / skills / personality (TS parity)
+# ═══════════════════════════════════════════════════════════════
+
+from letta_sdk import (  # noqa: E402
+    AgentSkill,
+    CreateAgentOptions,
+    CreateSessionOptions,
+    DreamingOptions,
+    LettaAgentClient,
+    LettaSession,
+    ToolsetConfig,
+    load_skill_directory,
+    parse_skill_markdown,
+    resolve_skill_items,
+    skill_memory_blocks,
+    skills_have_support_files,
+)
+from letta_sdk.client import LettaAgentClient as _Client  # noqa: E402
+from letta_sdk.session import LettaSession as _Session  # noqa: E402
+
+
+class _FakeConn:
+    """Minimal AppServerConnectionLike fake for option wiring tests."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+        self.request_log: list[tuple[str, dict[str, Any]]] = []
+        self.responses: dict[str, dict[str, Any]] = {}
+        self.handlers: list[Any] = []
+        self.closed = False
+
+    def set_response(self, command: str, response: dict[str, Any]) -> None:
+        self.responses[command] = response
+
+    async def request(
+        self,
+        type_: str,
+        body: dict[str, Any] | None = None,
+        *,
+        response_type: str | None = None,
+        predicate: Any = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        self.request_log.append((type_, body or {}))
+        if type_ not in self.responses:
+            raise AssertionError(f"fake: no handler for '{type_}'")
+        return self.responses[type_]
+
+    async def send(self, payload: dict[str, Any]) -> None:
+        self.sent.append(payload)
+
+    def on_message(self, handler: Any) -> Any:
+        self.handlers.append(handler)
+
+        def unsubscribe() -> None:
+            if handler in self.handlers:
+                self.handlers.remove(handler)
+
+        return unsubscribe
+
+    async def close(self) -> None:
+        self.closed = True
+
+    def last_payload(self) -> dict[str, Any]:
+        for payload in reversed(self.sent):
+            if payload.get("type") == "input":
+                return payload["payload"]
+        raise AssertionError("no input payload sent")
+
+    def set_runtime_start(self, agent_id: str = "agent-x") -> None:
+        self.set_response(
+            "runtime_start",
+            {
+                "type": "runtime_start_response",
+                "success": True,
+                "runtime": {
+                    "agent_id": agent_id,
+                    "conversation_id": f"conv-{agent_id}",
+                },
+                "agent": {"id": agent_id, "model": "m"},
+            },
+        )
+
+
+# ── toolset ─────────────────────────────────────────────────────
+
+
+def test_toolset_config_wire_shape_and_dedup() -> None:
+    assert ToolsetConfig().to_wire() == {}
+    assert ToolsetConfig(base="codex").to_wire() == {"base": "codex"}
+    wire = ToolsetConfig(base=None, include=["a", "b", "a"]).to_wire()
+    assert wire == {"include": ["a", "b"]}
+
+
+def test_normalize_toolset_dict_and_validation() -> None:
+    config = normalize_toolset_from({"base": "none", "include": ["x"]})
+    assert config.to_wire() == {"base": "none", "include": ["x"]}
+    assert normalize_toolset_from(None) is None
+    with pytest.raises(ValueError, match="Invalid toolset.base"):
+        normalize_toolset_from({"base": "gpt"})
+    with pytest.raises(ValueError, match="non-empty strings"):
+        normalize_toolset_from({"include": ["ok", ""]})
+    with pytest.raises(ValueError, match="Unknown toolset"):
+        normalize_toolset_from({"base": "codex", "extra": 1})
+
+
+def normalize_toolset_from(value: Any) -> Any:
+    from letta_sdk.types import normalize_toolset
+
+    return normalize_toolset(value)
+
+
+async def test_session_toolset_sent_on_every_turn() -> None:
+    conn = _FakeConn()
+    conn.set_runtime_start()
+    session = LettaSession(
+        connection=conn,
+        owns_connection=False,
+        agent_id="agent-x",
+        options=CreateSessionOptions(
+            toolset={"base": "gemini", "include": ["t1", "t2", "t1"]}
+        ),
+    )
+    await session.send("hi")
+    await session.send("again")
+    first, second = conn.sent
+    assert first["payload"]["client_toolset"] == {
+        "base": "gemini",
+        "include": ["t1", "t2"],
+    }
+    assert second["payload"]["client_toolset"] == first["payload"]["client_toolset"]
+
+
+async def test_session_without_toolset_sends_no_field() -> None:
+    conn = _FakeConn()
+    conn.set_runtime_start()
+    session = LettaSession(
+        connection=conn, owns_connection=False, agent_id="agent-x"
+    )
+    await session.send("hi")
+    assert "client_toolset" not in conn.sent[0]["payload"]
+
+
+# ── dreaming ────────────────────────────────────────────────────
+
+
+def test_dreaming_settings_defaults() -> None:
+    assert DreamingOptions().to_settings() == {
+        "trigger": "step-count",
+        "step_count": 5,
+    }
+    assert DreamingOptions(trigger="off", step_count=9).to_settings() == {
+        "trigger": "off",
+        "step_count": 9,
+    }
+
+
+def test_dreaming_validation() -> None:
+    from letta_sdk.types import normalize_dreaming
+
+    assert normalize_dreaming(None, allow_behavior=True) is None
+    normalized = normalize_dreaming(
+        {"trigger": "compaction-event", "step_count": 3},
+        allow_behavior=False,
+    )
+    assert normalized is not None
+    assert normalized.to_settings() == {
+        "trigger": "compaction-event",
+        "step_count": 3,
+    }
+    with pytest.raises(ValueError, match="Invalid dreaming.trigger"):
+        normalize_dreaming({"trigger": "sometimes"}, allow_behavior=True)
+    with pytest.raises(ValueError, match="Invalid dreaming.behavior"):
+        normalize_dreaming({"behavior": "nag"}, allow_behavior=True)
+    with pytest.raises(
+        ValueError, match="not supported when opening an existing"
+    ):
+        normalize_dreaming({"behavior": "reminder"}, allow_behavior=False)
+    for bad in (0, -1, 2.5, True):
+        with pytest.raises(ValueError, match="positive integer"):
+            normalize_dreaming({"step_count": bad}, allow_behavior=True)
+    with pytest.raises(ValueError, match="Unknown dreaming"):
+        normalize_dreaming({"bogus": 1}, allow_behavior=True)
+
+
+async def test_session_dreaming_applied_after_start() -> None:
+    conn = _FakeConn()
+    conn.set_runtime_start("agent-d")
+    conn.set_response(
+        "set_reflection_settings",
+        {"type": "set_reflection_settings_response", "success": True},
+    )
+    session = LettaSession(
+        connection=conn,
+        owns_connection=False,
+        agent_id="agent-d",
+        options=CreateSessionOptions(
+            dreaming={"trigger": "compaction-event", "step_count": 9}
+        ),
+    )
+    await session.ready()
+    entries = [b for t, b in conn.request_log if t == "set_reflection_settings"]
+    assert len(entries) == 1
+    assert entries[0]["scope"] == "both"
+    assert entries[0]["settings"] == {
+        "trigger": "compaction-event",
+        "step_count": 9,
+    }
+    assert entries[0]["runtime"] == {
+        "agent_id": "agent-d",
+        "conversation_id": "conv-agent-d",
+    }
+
+
+async def test_session_dreaming_skipped_when_stateless() -> None:
+    conn = _FakeConn()
+    conn.set_runtime_start("agent-d")
+    session = LettaSession(
+        connection=conn,
+        owns_connection=False,
+        agent_id="agent-d",
+        options=CreateSessionOptions(
+            dreaming=DreamingOptions(trigger="off"), stateless=True
+        ),
+    )
+    await session.ready()
+    assert not [
+        t for t, _ in conn.request_log if t == "set_reflection_settings"
+    ]
+
+
+# ── skills ──────────────────────────────────────────────────────
+
+
+def test_parse_skill_markdown_no_frontmatter() -> None:
+    assert parse_skill_markdown("just body") == (None, None, "just body")
+    assert parse_skill_markdown("---\nno fence") == (None, None, "---\nno fence")
+
+
+def test_parse_skill_markdown_frontmatter() -> None:
+    name, description, body = parse_skill_markdown(
+        "---\nname: my-skill\ndescription: \"does things\"\n---\nBody here."
+    )
+    assert name == "my-skill"
+    assert description == "does things"
+    assert body == "Body here."
+
+
+def test_parse_skill_markdown_folded_description() -> None:
+    _, description, body = parse_skill_markdown(
+        "---\ndescription: >-\n  line one\n  line two\n---\nB"
+    )
+    assert description == "line one line two"
+    assert body == "B"
+
+
+def test_load_skill_directory(tmp_path: Any) -> None:
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\ndescription: Test skill trigger\n---\nDo the thing.",
+        encoding="utf-8",
+    )
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "run.sh").write_text("echo hi", encoding="utf-8")
+    skill = load_skill_directory(skill_dir)
+    assert skill.name == "my-skill"
+    assert skill.description == "Test skill trigger"
+    assert skill.instructions == "Do the thing."
+    assert skill.files == {"scripts/run.sh": b"echo hi"}
+    assert skills_have_support_files([skill])
+
+
+def test_load_skill_directory_errors(tmp_path: Any) -> None:
+    with pytest.raises(ValueError, match="not a directory"):
+        load_skill_directory(tmp_path / "nope")
+    empty = tmp_path / "empty-skill"
+    empty.mkdir()
+    with pytest.raises(ValueError, match="has no SKILL.md"):
+        load_skill_directory(empty)
+    nodef = tmp_path / "no-desc"
+    nodef.mkdir()
+    (nodef / "SKILL.md").write_text("body only", encoding="utf-8")
+    with pytest.raises(ValueError, match="no frontmatter description"):
+        load_skill_directory(nodef)
+
+
+def test_resolve_skill_items_inline_dict_and_errors() -> None:
+    skill = resolve_skill_items(
+        [
+            AgentSkill(name="a", description="d", instructions="i"),
+            {"name": "b", "description": "d2", "instructions": "i2"},
+        ]
+    )
+    assert [s.name for s in skill] == ["a", "b"]
+    with pytest.raises(ValueError, match="Duplicate skill name"):
+        resolve_skill_items(
+            [
+                {"name": "dup", "description": "d", "instructions": "i"},
+                AgentSkill(name="dup", description="d", instructions="i"),
+            ]
+        )
+    with pytest.raises(ValueError, match="Invalid skill name"):
+        resolve_skill_items(
+            [{"name": "Bad Name", "description": "d", "instructions": "i"}]
+        )
+    with pytest.raises(ValueError, match="empty instructions"):
+        resolve_skill_items(
+            [{"name": "a", "description": "d", "instructions": "  "}]
+        )
+    with pytest.raises(ValueError, match="no description"):
+        resolve_skill_items(
+            [{"name": "a", "description": "", "instructions": "i"}]
+        )
+
+
+def test_skill_memory_blocks_shape() -> None:
+    blocks = skill_memory_blocks(
+        [AgentSkill(name="greet", description="Greet users", instructions="Say hi")]
+    )
+    assert blocks == [
+        {
+            "label": "skills/greet",
+            "value": "Say hi",
+            "description": "Greet users",
+        }
+    ]
+
+
+def test_apply_skill_seed_validation() -> None:
+    opts = CreateAgentOptions(
+        skills=[AgentSkill(name="g", description="d", instructions="i")]
+    )
+    body: dict[str, Any] = {}
+    LettaAgentClient._apply_skill_seed(opts, body)
+    assert body["memory_blocks"] == [
+        {"label": "skills/g", "value": "i", "description": "d"}
+    ]
+    no_memfs = CreateAgentOptions(
+        skills=[AgentSkill(name="g", description="d", instructions="i")],
+        memfs=False,
+    )
+    with pytest.raises(ValueError, match="memory filesystem"):
+        LettaAgentClient._apply_skill_seed(no_memfs, {})
+    with_files = CreateAgentOptions(
+        skills=[
+            AgentSkill(
+                name="g",
+                description="d",
+                instructions="i",
+                files={"scripts/x.sh": b"echo"},
+            )
+        ]
+    )
+    with pytest.raises(ValueError, match="skill support files"):
+        LettaAgentClient._apply_skill_seed(with_files, {})
+
+
+async def test_create_agent_skills_seed_memory_blocks() -> None:
+    conn = _FakeConn()
+    conn.set_runtime_start("agent-new")
+    client = LettaAgentClient(connection=conn)
+    await client.create_agent(
+        CreateAgentOptions(
+            name="skiller",
+            skills=[AgentSkill(name="greet", description="d", instructions="i")],
+        )
+    )
+    runtime_start_body = [
+        b for t, b in conn.request_log if t == "runtime_start"
+    ][0]
+    blocks = runtime_start_body["create_agent"]["body"]["memory_blocks"]
+    assert blocks == [
+        {"label": "skills/greet", "value": "i", "description": "d"}
+    ]
+
+
+# ── personality ─────────────────────────────────────────────────
+
+
+async def test_create_agent_personality_uses_native_command() -> None:
+    conn = _FakeConn()
+    conn.set_response(
+        "create_agent",
+        {
+            "type": "create_agent_response",
+            "success": True,
+            "agent_id": "agent-p",
+            "name": "Memo",
+        },
+    )
+    client = LettaAgentClient(connection=conn)
+    agent_id = await client.create_agent(
+        CreateAgentOptions(personality="memo", model="m/1", tags=["t"])
+    )
+    assert agent_id == "agent-p"
+    type_, body = conn.request_log[0]
+    assert type_ == "create_agent"
+    assert body == {
+        "personality": "memo",
+        "model": "m/1",
+        "tags": ["t"],
+        "pin_global": True,
+    }
+
+
+async def test_create_agent_personality_validation() -> None:
+    conn = _FakeConn()
+    client = LettaAgentClient(connection=conn)
+    with pytest.raises(ValueError, match="Unknown personality"):
+        await client.create_agent(CreateAgentOptions(personality="yoda"))
+    with pytest.raises(ValueError, match="cannot be combined with persona"):
+        await client.create_agent(
+            CreateAgentOptions(personality="blank", persona="custom")
+        )
+    with pytest.raises(ValueError, match="cannot be combined with memory_blocks"):
+        await client.create_agent(
+            CreateAgentOptions(
+                personality="blank",
+                memory_blocks=[{"label": "persona", "value": "x"}],
+            )
+        )
+    assert not conn.request_log
+
+
+async def test_create_agent_personality_unpinned_when_hidden() -> None:
+    conn = _FakeConn()
+    conn.set_response(
+        "create_agent",
+        {
+            "type": "create_agent_response",
+            "success": True,
+            "agent_id": "agent-p",
+        },
+    )
+    client = LettaAgentClient(connection=conn)
+    await client.create_agent(
+        CreateAgentOptions(personality="blank", hidden=True)
+    )
+    _, body = conn.request_log[0]
+    assert body["pin_global"] is False
+    with_explicit = CreateAgentOptions(
+        personality="blank", hidden=True, pin_global=True
+    )
+    await client.create_agent(with_explicit)
+    assert conn.request_log[1][1]["pin_global"] is True

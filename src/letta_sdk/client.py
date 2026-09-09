@@ -29,15 +29,26 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from .app_server import AppServerConnection, AppServerConnectionLike, load_token_file
+from .app_server import (
+    AppServerConnection,
+    AppServerConnectionLike,
+    AppServerRequestError,
+    load_token_file,
+)
 from .management import AgentsManager, ConversationsManager, ModelsManager
 from .query import QueryStream
 from .session import LettaSession
+from .skills import (
+    resolve_skill_items,
+    skill_memory_blocks,
+    skills_have_support_files,
+)
 from .types import (
     Backend,
     CreateAgentOptions,
     CreateSessionOptions,
     DEFAULT_APP_SERVER_URL,
+    normalize_dreaming,
     QueryOptions,
     ResultMessage,
     SDKMessage,
@@ -183,11 +194,42 @@ class LettaAgentClient:
 
     # ── agents & sessions ────────────────────────────────────────
 
+    # Wire-validated personality ids (app-server ``create_agent`` command).
+    _PERSONALITY_IDS: tuple[str, ...] = (
+        "memo",
+        "blank",
+        "tutorial",
+        "linus",
+        "kawaii",
+    )
+
     async def create_agent(self, options: CreateAgentOptions | None = None) -> str:
-        """Create an agent (``runtime_start`` + ``create_agent``) and return
-        its id."""
-        body = (options or CreateAgentOptions()).to_body()
-        session = self._new_session(create_agent_body=body)
+        """Create an agent and return its id.
+
+        ``personality`` agents use the app server's native ``create_agent``
+        command (server-side preset resolution). All other options go
+        through ``runtime_start`` + ``create_agent``; ``skills`` seed as
+        ``skills/{name}`` memory blocks.
+        """
+        opts = options or CreateAgentOptions()
+        if opts.personality is not None:
+            return await self._create_personality_agent(opts)
+
+        body = opts.to_body()
+        if opts.skills:
+            self._apply_skill_seed(opts, body)
+        session_options: CreateSessionOptions | None = None
+        if opts.dreaming is not None:
+            dreaming = normalize_dreaming(opts.dreaming, allow_behavior=True)
+            if dreaming is not None and dreaming.behavior is not None:
+                raise ValueError(
+                    "App-server createAgent() does not yet support "
+                    "dreaming.behavior overrides."
+                )
+            session_options = CreateSessionOptions(dreaming=dreaming)
+        session = self._new_session(
+            create_agent_body=body, options=session_options
+        )
         try:
             init = await session.ready()
             if not init.agent_id:
@@ -197,6 +239,69 @@ class LettaAgentClient:
             return init.agent_id
         finally:
             await session.close()
+
+    @staticmethod
+    def _apply_skill_seed(opts: CreateAgentOptions, body: dict[str, Any]) -> None:
+        skills = resolve_skill_items(opts.skills)
+        if not skills:
+            return
+        if opts.memfs is not None and not opts.memfs:
+            raise ValueError(
+                "createAgent() skills require the memory filesystem; "
+                "remove memfs: false."
+            )
+        if skills_have_support_files(skills):
+            raise ValueError(
+                "This backend does not yet support skill support files "
+                "(scripts/, references/). Use a skill with only SKILL.md, "
+                "or an inline AgentSkill without files."
+            )
+        blocks = list(body.get("memory_blocks") or [])
+        blocks.extend(skill_memory_blocks(skills))
+        body["memory_blocks"] = blocks
+
+    async def _create_personality_agent(self, opts: CreateAgentOptions) -> str:
+        personality = opts.personality
+        if personality is None:
+            raise RuntimeError("personality is required for this path")
+        if personality not in self._PERSONALITY_IDS:
+            raise ValueError(
+                f"Unknown personality {personality!r}. Valid values: "
+                + ", ".join(self._PERSONALITY_IDS)
+            )
+        for field_name in ("memory_blocks", "persona", "human", "system_prompt"):
+            if getattr(opts, field_name):
+                raise ValueError(
+                    "create_agent(personality=...) cannot be combined with "
+                    f"{field_name}; the server resolves the preset."
+                )
+        body: dict[str, Any] = {"personality": personality}
+        if opts.model is not None:
+            body["model"] = opts.model
+        if opts.tags:
+            body["tags"] = list(opts.tags)
+        # TS parity: pinGlobalAgent ?? hidden !== true
+        body["pin_global"] = (
+            opts.pin_global
+            if opts.pin_global is not None
+            else not bool(opts.hidden)
+        )
+        connection = self._new_connection()
+        try:
+            response = await connection.request(
+                "create_agent",
+                body,
+                response_type="create_agent_response",
+            )
+        finally:
+            await connection.close()
+        if not response.get("success", True) or not isinstance(
+            response.get("agent_id"), str
+        ):
+            raise AppServerRequestError(
+                str(response.get("error") or "create_agent failed")
+            )
+        return response["agent_id"]
 
     def create_session(
         self,

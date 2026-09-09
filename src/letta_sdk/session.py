@@ -39,6 +39,7 @@ from .types import (
     AssistantMessage,
     CanUseToolDecision,
     CreateSessionOptions,
+    DreamingOptions,
     ErrorMessage,
     ListMessagesOptions,
     ListMessagesResult,
@@ -55,8 +56,11 @@ from .types import (
     ToolCallMessage,
     ToolResult,
     ToolResultMessage,
+    ToolsetConfig,
     ToolSpec,
     UsageMessage,
+    normalize_dreaming,
+    normalize_toolset,
 )
 
 try:
@@ -237,6 +241,12 @@ class LettaSession:
         self._client_tools = {
             t.name: t for t in (self._options.tools or [])
         }
+        self._toolset: ToolsetConfig | None = normalize_toolset(
+            self._options.toolset
+        )
+        self._dreaming: DreamingOptions | None = normalize_dreaming(
+            self._options.dreaming, allow_behavior=False
+        )
 
         self._runtime: dict[str, str] | None = None
         self._agent_id: str | None = None
@@ -364,21 +374,24 @@ class LettaSession:
                 started_at=time.monotonic(),
             )
         )
+        payload: dict[str, Any] = {
+            "kind": "create_message",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": content,
+                    "client_message_id": client_message_id,
+                }
+            ],
+            "exclude_interactive_tools": True,
+        }
+        if self._toolset is not None:
+            payload["client_toolset"] = self._toolset.to_wire()
         await self._connection.send(
             {
                 "type": "input",
                 "runtime": dict(self._runtime),
-                "payload": {
-                    "kind": "create_message",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": content,
-                            "client_message_id": client_message_id,
-                        }
-                    ],
-                    "exclude_interactive_tools": True,
-                },
+                "payload": payload,
             }
         )
 
@@ -571,6 +584,27 @@ class LettaSession:
         }
         self._agent_id = runtime["agent_id"]
         self._conversation_id = runtime["conversation_id"]
+
+        if self._dreaming is not None and not self._options.stateless:
+            # TS parity: after the runtime is up (and after the memfs step,
+            # which the server handles from the create body), apply the
+            # reflection settings; skipped for stateless sessions.
+            settings_response = await self._connection.request(
+                "set_reflection_settings",
+                {
+                    "runtime": dict(self._runtime),
+                    "settings": self._dreaming.to_settings(),
+                    "scope": "both",
+                },
+                response_type="set_reflection_settings_response",
+            )
+            if not settings_response.get("success", True):
+                raise AppServerRequestError(
+                    str(
+                        settings_response.get("error")
+                        or "set_reflection_settings failed"
+                    )
+                )
 
         agent_raw = response.get("agent")
         agent: dict[str, Any] = agent_raw if isinstance(agent_raw, dict) else {}
