@@ -8,6 +8,10 @@ version = "0.2.0"
 description = "A pythonic SDK for working with Letta agents (Letta Code app server, agent SDK v2)"
 readme = "Readme.md"
 requires-python = ">=3.11"
+license = {file = "LICENSE"}
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+]
 dependencies = [
   "websockets>=12",
 ]
