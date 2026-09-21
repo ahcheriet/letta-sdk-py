@@ -502,13 +502,23 @@ class LettaSession:
         }
 
     async def abort(self) -> None:
+        """Interrupt the runtime's active turn (letta-code `abort_message`).
+
+        letta-code's app-server implements `AbortMessageCommand`
+        (`type: "abort_message"`) and acks with `abort_message_response`
+        (`aborted: true` when an active turn or pending approval was
+        interrupted). Older harnesses may not acknowledge; the loop status
+        then reflects the interruption on the stream instead, and the
+        bounded timeout below keeps this call from hanging.
+        """
         if not self._initialized or self._runtime is None:
             return
         try:
             await self._connection.request(
-                "abort",
+                "abort_message",
                 {"runtime": dict(self._runtime)},
-                response_type="abort_response",
+                response_type="abort_message_response",
+                timeout=5.0,
             )
         except (AppServerRequestError, AppServerTimeoutError, AppServerClosedError):
             # Some harnesses do not acknowledge abort; the loop status will
